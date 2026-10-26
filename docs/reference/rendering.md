@@ -718,6 +718,13 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** the host's GL layer (`dm/gfx/gl/hle_gl.m`) answers the EGL imports and `eglGetProcAddress` (the rest of this section).
 - **Found on:** [Digimon Story Cyber Sleuth: Complete Edition](../../dm/games/010014E00DB56000/README.md) (SDK 6.4.0, Media.Vision's MVGL engine; one boot).
 
+### Direct GL imports use the same implementations as the loader
+
+- **Symptom:** `UNIMPL glCreateShader` returns 0, followed by `UNIMPL glShaderSource`, `glCompileShader`, `glGetShaderiv` and `glGetShaderInfoLog`; the game crashes in `sdk` with a null shader handle even though EGL initialized.
+- **Cause:** the GL implementations were registered only in `__DATA,swgl`, which `eglGetProcAddress` searched. Normal imports search `__DATA,swhle`; a game that imports GL directly never consulted the GL table and got named unimplemented stubs instead.
+- **Fix:** `GL` and `GLB` register in `swhle`, and `eglGetProcAddress` searches that same table. Both paths retain `GLB`'s big-stack entry; unsupported loader names still return null by default (`DM_GL_STUBS=1` enables diagnostic stubs). `make -C dm/gfx/tests GAME=010014E00DB56000 gl-imports` exercises the real import resolver and GL registrations, shader creation and source queries, wrapper addresses and missing names in both diagnostic modes, without game files.
+- **Found on:** Darkest Dungeon Complete (`01008F1008DA6000`, update v327680, SDK 3.6.0, provisional profile), reported in [issue #228](https://github.com/seedds/nxnative/issues/228). The import failure is reproduced by the regression test; gameplay and run-time shader capture for this title remain unverified.
+
 ### Telling a GL game from an NVN or Vulkan one
 
 - **Symptom:** the NSP script's provisional profile said Vulkan, and the capture boot crashed in the GL layer.

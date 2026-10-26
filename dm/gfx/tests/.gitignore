@@ -86,6 +86,8 @@ t_view_swizzle
 t_view_swizzle.dSYM/
 t_vk_desc
 t_vk_desc.dSYM/
+t_gl_imports
+t_gl_imports.dSYM/
 t_readback
 t_readback.dSYM/
 t_linear_readback
