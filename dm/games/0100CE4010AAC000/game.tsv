@@ -1,7 +1,7 @@
 # Game profile of FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition (Switch, update 1.0.3 = v196608 over the base cartridge). Plays on the Mac (boot, title, intro, field and dungeon play)
 # Format: see dm/games/README.md
 # Unity 2018.4.2f1 IL2CPP with FMOD, SDK 8.2.1; subsdk0 is the movie module. Started from the provisional profile of build_ipa_from_nsp.py (the keys below are its static guesses, kept
-# because they boot and play); notes, the fixes it needed and what is open: README.md. patches.py holds the ThreadedStreamBuffer memory-order cuts for the 1.0.3 and 1.0.0 mains.
+# because they boot and play); notes, the fixes it needed and what is open: README.md. patches.py holds the ThreadedStreamBuffer memory-order cuts for the registered 1.0.3 main; the note records the 1.0.0 sites.
 # Game logic counts frames: keep the default present interval (30 fps); DM_PRESENT_INTERVAL=display makes it run twice as fast.
 
 # ---- Identity ----

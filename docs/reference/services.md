@@ -207,6 +207,13 @@ Most service calls can be found before they crash, before the first boot or the 
 
 ## Input
 
+### Controller disconnect between style and player lookup
+
+- **Symptom:** clang reports a negative shift in `fill` or `vib_targets` (`hle_hid.c`).
+- **Cause:** a style check looked up the connected player, then input or vibration routing looked it up again. A disconnect between the reads made the second result -1, used in `1u << player`.
+- **Fix:** look up the player once and derive the style from that same result before constructing the player mask.
+- **Found on:** clang static analysis ([issue #424](https://github.com/seedds/nxnative/issues/424)); no gameplay failure reported.
+
 ### History reads fill every requested entry
 
 - **Symptom:** buttons and menus work, the sticks do nothing in play (Super Mario Odyssey: its first hint, "Look Around", waited forever); an `nn::diag` abort with Result 0x2aca in the first frames of `nnMain` (Hollow Knight: Silksong, Unity 6000.0.50f1: `bt: sdk+0x514580 main+0x1296c64 …`).
@@ -229,6 +236,26 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** it now reports one per connected controller: two for handheld or dual Joy-Cons, one otherwise, with the style, npad id and device in the handle. At rest the sensor lies flat: acceleration (0, 0, −1) G, no rotation, identity direction. Samples are 5 ms apart on the guest clock and numbered by time, so a history read returns the samples at those times. `DM_BTN_SHAKE` (`dm_input.h`: the iPhone shaken, Space on the Mac, `DM_KEYS` `Shake`) plays a side-to-side shake in whole cycles.
 - **Found on:** [Super Mario Odyssey](../../dm/games/0100000000010000/README.md): it reads all 16 history entries per sensor and ignores the count, like its npad history ([History reads fill every requested entry](#history-reads-fill-every-requested-entry)).
 - **Note:** find a game's swing detector by probing the accelerometer value it reads (`DM_PROBE=main:626248@x8+10` in Odyssey 1.4.1).
+
+### Live controller motion
+
+- **Symptom:** motion controls do nothing with a controller that has a gyroscope (Breath of the Wild: aiming with its Motion Controls option on); the six-axis sensor always lies flat.
+- **Cause:** the host's six-axis sensor had no source of motion: flat at rest, apart from the `DM_BTN_SHAKE` shake ([Six-axis sensors](#six-axis-sensors)).
+- **Fix:** a controller with a gyroscope drives its player's sensor on the Mac and iOS (`GCMotion`, `motion_apple.h` → `dm_motion_set`, `hle_hid.c`); on iOS the phone's own device motion drives player 1's while no controller supplies fresh motion (`DmGamepad.m`). The orientation is integrated from the gyro with tilt correction toward the measured gravity (`motion_fusion.h`), in `SixAxisSensorState`'s units (G, revolutions/s, revolutions). After 300 ms without a sample the source expires; without another source the sensor lies flat again. A shake still adds on top. The switches are in [development.md, How it works](../development.md#how-it-works) (Input).
+- **Source routing (resolved, review of PR #351):** sharing one integrator let phone and controller callbacks mix orientations, including with `DM_PHONE_MOTION=1`; checking only `hasRotationRate` also let zero-only controller reports suppress the phone. Each source now has its own orientation and timestamp: auto prefers fresh controller data, forced mode selects only the phone, and the Apple adapter waits for actual data before publishing. One-player games merge motion from the same controller slots as buttons. Motion settings initialize once with `pthread_once`; per-source locks also protect diagnostic timestamps. `t_hid` covers routing, expiry and concurrent startup under ThreadSanitizer; `t_motion_apple` covers activation, zero-only reports and detachment.
+- **Upright initialization (resolved, review of PR #351):** the heading reference was parallel to gravity when the phone started upright, so projection produced a zero vector and silently left the orientation flat. A nonparallel reference now primes the orientation on the first sample; `t_motion` covers all six axis-aligned starting poses.
+- **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (1.9.0): motion aiming on a Mac with a DualSense. The iOS paths have not been tested on a device.
+- **Note:** history entries repeat the newest sample; yaw drifts as on the console, with no recenter. The console's own sensor still reports no states ([SDK 20 six-axis sensor and amiibo (`nfp`) calls](#sdk-20-six-axis-sensor-and-amiibo-nfp-calls)), so motion follows the controller in docked mode.
+- **Open:** [PR #286](https://github.com/seedds/nxnative/pull/286) has iPad aiming measurements and calibration controls to compare on a device before choosing shared defaults. Related reports: [#153](https://github.com/seedds/nxnative/issues/153), [#389](https://github.com/seedds/nxnative/issues/389).
+
+### Switch Pro Controller advertises motion but sends zeroes
+
+- **Symptom:** a Pro Controller's buttons work on the Mac, but its gyro pointer never moves; `GCMotion` callbacks arrive with acceleration and rotation all zero.
+- **Cause:** the macOS driver can expose empty motion through GameController while its underlying Nintendo HID `0x30` reports contain IMU data ([PR #296](https://github.com/seedds/nxnative/pull/296)). The OS driver lies outside this repository; the passive HID adapter is a workaround for that platform defect.
+- **Fix:** `motion_pro_mac.h` listens nonexclusively to vendor `057E`, product `2009`, without sending commands or changing the driver's configuration. `motion_pro.h` converts the three signed little-endian samples to G and rad/s in the Switch frame; their nominal 5 ms spacing reaches the shared integrator through `dm_motion_set_hid`. Each HID device owns its buffer and decoder. HID, GameController and phone orientations stay separate; usable GameController data wins, otherwise fresh HID data supplies that player's controller motion. Removal, focus loss or ambiguous routing clears only the HID source; 300 ms of silence expires it. `DM_MOTION_HID=0` disables the reader; `DM_MOTION=0` disables all motion.
+- **Routing limit:** GameController exposes no public per-controller HID identity. Raw motion is enabled only with one physical Pro and one GameController Pro, using that controller's existing player slot (including `DM_KBD_PLAYER=own` / `DM_PAD_MERGE`). Multiple Pros keep their GameController paths; raw data is never assigned to the first controller by guesswork. Synthetic GameController HID devices are excluded with Apple's `GCSyntheticDevice` property.
+- **Open:** passive reading cannot obtain factory calibration without issuing SPI commands alongside the OS driver. Nominal scales are 4096 counts/G and 70 mdps/count ([protocol research](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/imu_sensor_notes.md)); no automatic bias learning removes slow intentional turns. Sample order follows that research and [Linux hid-nintendo](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-nintendo.c); SDL reverses it. Confirm order, sensitivity, drift and reconnects on hardware before calling the reworked reader device-tested. `t_motion_pro`, `t_motion_pro_mac` and `t_hid` cover decoding, timestamps, ownership, removal, ambiguity and source fallback with synthetic inputs.
+- **Found on:** [Super Mario Galaxy](../../dm/games/010099C022B96000/README.md), docked pointer on a Pro Controller.
 
 ### SDK 20 six-axis sensor and amiibo (`nfp`) calls
 
