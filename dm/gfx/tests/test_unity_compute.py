@@ -1,5 +1,8 @@
 """Legacy ComputeShader objects contain kernels directly, without a variant map."""
 from pathlib import Path
+import contextlib
+import io
+import json
 import struct
 import sys
 import unittest
@@ -51,6 +54,33 @@ class LegacyComputeTests(unittest.TestCase):
         self.assertEqual(objects[0][2]['variants'][0]['resourcesResolved'], True)
         shaders = shader_split.unity_compute(data, 'fixture', trees)
         self.assertEqual(shaders, [('fixture#LegacySkinning#SkinVertices.0', 'cs', control, code)])
+
+    def test_stripped_2017_counters_and_kernel_reach_shader_split(self):
+        data, old_hash, control, code = legacy_compute()
+        type_hash = bytes.fromhex('20291e020d10074c35d8286f5191593f')
+        # The 2017 resource's counter is two ints, like the two differently named
+        # fields in 2019, so the same independent wire fixture exercises both trees.
+        data = data.replace(old_hash, type_hash).replace(b'2019.4.27f1\0', b'2017.4.28f1\0')
+        trees = {(72, type_hash): unityfs.known_tree(72, type_hash)}
+        objects = list(unityfs.serialized_objects(data, {}, {72}, trees))
+        variant = objects[0][2]['variants'][0]
+        resource = variant['kernels'][0]['outBuffers'][0]
+        self.assertEqual(resource, {'name': 'Result', 'generatedName': 'ResultBuffer', 'bindPoint': 0,
+                                    'counter': {'bindpoint': -1, 'offset': 1}})
+        self.assertEqual(variant['constantBuffers'][0]['params'][0]['colCount'], 1)
+        self.assertTrue(variant['resourcesResolved'])
+        le, doff, types, entries = unityfs._tables(data, {}, {72}, trees)
+        _, start, size, ti = entries[0]
+        reader = unityfs.Reader(data[doff + start:doff + start + size], le)
+        unityfs._read(reader, types[ti][2])
+        self.assertEqual(reader.p, size)
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log): shaders = shader_split.unity_compute(data, 'fixture', trees)
+        self.assertEqual(shaders, [('fixture#LegacySkinning#SkinVertices.0', 'cs', control, code)])
+        lines = log.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0].removeprefix('unity compute source: ')),
+                         [shader_split.skey(control, code), 'fixture#LegacySkinning#SkinVertices.0'])
 
 
 if __name__ == '__main__':

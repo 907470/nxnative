@@ -674,6 +674,48 @@ def copied_base(insl, k, rb):
         if lo is not None and p.mnemonic == 'adrp' and ops[0] == r: return p.operands[1].imm + lo
         return None
     return None
+def jump_masked_not(insl, j):
+    """A zero-guarded complemented index: tst wS,#M; b.eq exit; mvn wS,wS; and xI,xS,#M; ldrsw xE,[xB,xI,lsl #2]; add x18,xE,xB; br x18.
+    Return of the Obra Dinn 1.0.1 main+0x6eea88 / +0x6eeac0 (Unity 2017.4) has seven entries, not eight: M is 7, the tst excludes zero, and the complement maps 1..7 to 6..0.
+    Read exactly M entries for a contiguous low-bit mask, only after the older recognizers fail. Straight-line data flow and no entry past the guard are required."""
+    ctx = insl[max(0, j - 16):j + 1]
+    add = next((p for p in reversed(ctx[:-1]) if p.mnemonic == 'add' and re.fullmatch(r'x18, x\d+, x\d+', p.op_str)), None)
+    if not add: return None
+    _, ent, base = add.op_str.split(', '); ka = ctx.index(add)
+    ld = next((p for p in reversed(ctx[:ka]) if p.mnemonic == 'ldrsw' and re.fullmatch(rf'{ent}, \[{base}, x\d+, lsl #2\]', p.op_str)), None)
+    if not ld: return None
+    kl = ctx.index(ld); idx = re.fullmatch(rf'{ent}, \[{base}, (x\d+), lsl #2\]', ld.op_str).group(1)
+    if base in (ent, idx): return None
+    mask = next((p for p in reversed(ctx[:kl]) if p.mnemonic == 'and' and re.fullmatch(rf'{idx}, x\d+, #(0x[0-9a-f]+|\d+)', p.op_str)), None)
+    if not mask: return None
+    km = ctx.index(mask)
+    if km < 3: return None
+    _, src, imm = mask.op_str.split(', '); n = int(imm[1:], 0)
+    if not n or n & (n + 1) or n > 0xffffffff: return None
+    test, branch, invert = ctx[km - 3:km]
+    if test.mnemonic != 'tst' or test.op_str != f'w{src[1:]}, {imm}' or branch.mnemonic != 'b.eq' or \
+       invert.mnemonic != 'mvn' or invert.op_str != f'w{src[1:]}, w{src[1:]}': return None
+    run = ctx[km - 3:]
+    if any(b.address != a.address + 4 for a, b in zip(run, run[1:])): return None
+    head, end = test.address, insl[j].address
+    if head <= branch.operands[0].imm <= end: return None
+    def writes(p, reg):
+        if p.mnemonic in ('cmp', 'cmn', 'tst'): return False
+        if p.mnemonic in ('bl', 'blr') and num(reg) <= 18: return True
+        return any(p.reg_name(r).replace('w', 'x', 1) == reg for r in p.regs_access()[1])
+    if any(writes(p, idx) for p in ctx[km + 1:kl]) or any(writes(p, ent) for p in ctx[kl + 1:ka]) or \
+       any(writes(p, base) for p in ctx[kl + 1:ka + 1]) or any(writes(p, 'x18') for p in ctx[ka + 1:-1]): return None
+    if any(p.mnemonic in ('b', 'bl', 'br', 'blr', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz') or p.mnemonic.startswith('b.') for p in ctx[km + 1:-1]): return None
+    for p in insl:
+        if p.mnemonic in ('b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz') or p.mnemonic.startswith('b.'):
+            if head < p.operands[-1].imm <= end: return None
+    if any(head < t <= end for targets in tabjumps.values() for t in targets): return None
+    if any(b <= end and b + 4 * width > head + 4 for b, width in jumps.values()): return None
+    tb = copied_base(insl, insl.index(ld), base)
+    if tb is None or tb < 0 or tb + 4 * n > len(IMG): return None
+    targets = [tb + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)]
+    addresses = {p.address for p in insl}
+    return targets if all(t in addresses and not head < t <= end for t in targets) else None
 def jump_adr_offsets(insl, j):
     """Entries relative to an adr rather than to the table (Tears of the Kingdom main+0x393bb0): cmp w0,#5; b.hi; ...; adr x18,#L; ldrsw x1,[x17,x0,lsl #2];
     add x18,x18,x1; br x18 → target = L + entry, with the table base x17 from adrp + add. Tried only where jump_offsets finds nothing. Returns all targets, or None if not recognized"""
@@ -938,6 +980,7 @@ for fa, fb in funcs:
                 if not tgt and (far := jump_bytes_far(insl, j)): jumps[ins.address] = far; continue
                 if not tgt: tgt = jump_offsets(insl, j, copy_first=True, far_base=True)   # the index copied before the check (check_before_copy) or the base set far back, only where every other form failed
                 if not tgt: tgt = jump_masked_pred(insl, j)   # the check on a masked copy made in the block, the index masked in the block that branches to it
+                if not tgt: tgt = jump_masked_not(insl, j)   # a complemented low-bit index with its zero case branched away: exactly mask entries
                 assert tgt, f'jump table {ins.address:x}'
                 tabjumps[ins.address] = tgt; continue
             jumps[ins.address] = (base, width)

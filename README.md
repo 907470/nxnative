@@ -166,6 +166,11 @@ Under each game: the IPA's size, and "60 fps with 1.2.0" where the game runs at 
 <td align="center" valign="top" width="33%"><img src="docs/images/xenoblade-chronicles-3.jpg" width="256" alt="Xenoblade Chronicles 3"><br>Xenoblade Chronicles 3<br><sub>~19.2 GB</sub></td>
 <td align="center" valign="top" width="33%"><img src="docs/images/final-fantasy-crystal-chronicles.jpg" width="256" alt="FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition"><br>FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition</td>
 </tr>
+<tr>
+<td align="center" valign="top" width="33%"><img src="docs/images/return-of-the-obra-dinn.png" width="256" alt="Return of the Obra Dinn"><br><a href="dm/games/010032E00E6E2000/README.md">Return of the Obra Dinn</a><br><sub>~0.9 GB</sub></td>
+<td></td>
+<td></td>
+</tr>
 </table>
 <!-- end of gallery -->
 

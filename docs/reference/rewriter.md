@@ -65,6 +65,14 @@ To enroll a cut for any game's own module:
 - **Found on:** FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition 1.0.0 (Unity 2018.4.2f1, SDK 8.2.1) `main+0x2d103cc` and `+0x2d10590`, in one function; the same form in its update 1.0.3.
 - **Check:** it runs only where the rewriter asserted before, so modules that rewrote before come out the same; other games' modules were not on hand to compare.
 
+### Zero-guarded complemented jump-table index
+
+- **Symptom:** `jump table 6eea88` or `jump table 6eeac0` assertion in `patch_nso.py` on Return of the Obra Dinn 1.0.1.
+- **Cause:** Unity's IL2CPP output uses `tst w15,#7; b.eq exit; mvn w15,w15; and x15,x15,#7; ldrsw x15,[xB,x15,lsl #2]; add x18,x15,xB; br x18`. The zero test excludes one masked value before complementing it: the reachable indices are 0–6, so the table holds seven entries. Treating the `tst` immediate as a `cmp` bound reads an eighth word from the next table, introducing a target the guest cannot reach through this dispatch.
+- **Fix:** the last fallback, `jump_masked_not`, accepts this contiguous guard / complement / low-bit-mask form, reads exactly the mask's number of entries, follows the table base through `copied_base`, and requires decoded instruction targets in the function. It rejects intervening register writes or control flow, direct branches / calls and already resolved tables entering after the guard, and its own table targets bypassing the guard. Earlier recognizers are unchanged.
+- **Found on:** [Return of the Obra Dinn](../../dm/games/010032E00E6E2000/README.md) 1.0.1 (`main` build `9e93a6566aaa27418dd2435d8d5dffe5`), two dispatches in the function at `main+0x6ee8c0`.
+- **Check:** `dm/tools/tests/test_jump_copies.py` exercises the exact seven-entry extent with an invalid next word, mismatched guards / masks / sources, register clobbers, incoming edges, undecodable words and invalid targets. The extracted update's two sites resolve to seven targets each; this is static verification, with gameplay validation recorded in the game note.
+
 ### Offset table base set far back in the function
 
 - **Symptom:** `jump table <addr>` assertion on an offset table whose base was set far back (`cmp w18,#5; b.hi; ldrsw x18,[x24,x18,lsl #2]; add x18,x18,x24; br x18`).

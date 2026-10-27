@@ -751,13 +751,13 @@ def derive_profile(g, pdir, ver, d, mods, app=None, shader_only=False):
     left out: the build makes them again from this version's own files, as for a provisional profile. The hand-written tables (the prewarm list, shader_facts_manual.tsv) are copied:
     they name shaders by content key. A folder derived from the same inputs (the files copied and the game.tsv written, kept in <pdir>.derived.key) is kept as it is, with what later
     stages wrote into it (mem_used, the heap check, the split's tables), so their own reuse holds. shader_only preserves all registered game.tsv rows and links its existing cuts:
-    only the shader tables change with the installed DLC. Returns the version's display version"""
+    only the shader tables change with installed DLC or newly decoded compute kernels. Returns the version's display version"""
     src = sorted(p for p in g.dir.iterdir() if p.is_file() and (p.name not in DERIVED_SKIP or shader_only and p.name == 'patches.py'))
     T, disp = '\t', nacp.version(d / 'control.nacp') or '?'
     row = T.join(['build', ver, disp] + [f'{m}={build_id(d / "ExeFS" / m)}' for m in mods if (d / 'ExeFS' / m).exists()])
     out, put = [f'# Derived from game profile {g.dir} by scripts/build_ipa_from_nsp.py for {ver} ({disp}), a version that profile was not brought up on:',
                 '# its keys as they are, this version\'s build row, and shader tables made from this version\'s own files'], False
-    if shader_only: out = [f'# Derived from game profile {g.dir} for the installed DLC shader content; registered module builds and settings are preserved.']
+    if shader_only: out = [f'# Derived shader tables from game profile {g.dir}; registered module builds and settings are preserved.']
     ids = {}
     if app is not None and app != g.title_id:   # the host reports the program ID and answers save data queries for it (hle_svc.c, hle_fs.c)
         ids = {'title_id': f'title_id{T}{app:016X}', 'program_id': f'program_id{T}{(pg.npdm(d / "ExeFS/main.npdm")[1] or app):016X}'}
@@ -1418,7 +1418,54 @@ def dlc_only_shader_change(g, tables):
     except (OSError, UnicodeError, ValueError): return False
 
 
-def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, oodle=None, dlc_roms=(), derive_dlc=None):
+def compute_reader_additions(g, tables, split_log):
+    """Only newly decoded Unity ComputeShader kernels, preserving every registered shader, fact and evidence pair.
+    Called for registered module builds only. Package indices may move when the new kernels sort among old entries;
+    package/stage/source identity may not. Actual reader key/source records in the split log prove each addition's origin."""
+    def rows(path):
+        out = {}
+        for line in path.read_text().splitlines():
+            if not line.strip() or line.startswith(('#', 'package\t')): continue
+            c = line.split('\t')
+            if len(c) != 5 or not c[0].endswith('.bin') or not c[1].isdigit() or c[3] in out: raise ValueError('invalid shader map')
+            out[c[3]] = (c[0], c[2], c[4])
+        return out
+    def facts(path):
+        out = {}
+        for line in path.read_text().splitlines():
+            if not line.strip() or line.startswith('#'): continue
+            c = line.split('\t', 1)
+            if len(c) != 2 or c[0] in out: raise ValueError('invalid shader facts')
+            out[c[0]] = c[1]
+        return out
+    try:
+        old, new = rows(g.table('shader_map.tsv')), rows(tables / 'shader_map.tsv')
+        added = new.keys() - old.keys()
+        if not added or any(new.get(k) != v for k, v in old.items()): return False
+        evidence = set()
+        for line in split_log.splitlines():
+            if line.startswith('unity compute source: '):
+                record = json.loads(line.removeprefix('unity compute source: '))
+                if not isinstance(record, list) or len(record) != 2 or not all(isinstance(v, str) for v in record): return False
+                evidence.add(tuple(record))
+        if any(new[k][1] != 'compute' or (k, new[k][2]) not in evidence for k in added): return False
+        before, after = facts(g.table('shader_facts.tsv')), facts(tables / 'shader_facts.tsv')
+        if after.keys() - before.keys() != added or any(after.get(k) != v for k, v in before.items()): return False
+        if data_rows(g.table('shader_pairs.tsv').read_bytes()) != data_rows((tables / 'shader_pairs.tsv').read_bytes()): return False
+        pso = g.table('pso_pairs.tsv')
+        if pso.is_file():
+            # New supplemental pass covers may accompany the reader, but no registered pair can disappear.
+            old_pairs, new_pairs = set(data_rows(pso.read_bytes())), set(data_rows((tables / 'pso_pairs.tsv').read_bytes()))
+            if not old_pairs <= new_pairs: return False
+            for line in new_pairs - old_pairs:
+                if not line.strip(): continue
+                pair = line.decode().split('\t')
+                if len(pair) != 2 or old.get(pair[0], ('', '', ''))[1] != 'vertex' or old.get(pair[1], ('', '', ''))[1] != 'pixel': return False
+        return True
+    except (OSError, UnicodeError, ValueError): return False
+
+
+def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, oodle=None, dlc_roms=(), derive_dlc=None, derive_compute=None):
     """The shader split into pkg, checked against the profile's tables. The package is reused when the tools, the profile, the DLC RomFS roots and each version's main, RomFS (paths and sizes) and run-time capture
     are as at the last successful split. Returns the package's content key, the shader build's input (None for damaged files, which never reuse them): a split that runs
     again because a reader of another engine changed writes the same package, and the iOS shaders stay reused.
@@ -1436,15 +1483,20 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
         inputs += [('files', [env['DM_OODLE_HOST']]), ('stat', Path(env['DM_OODLE_MODULES']))]
     key = None if ALLOW_DAMAGED else fingerprint(*inputs, ('files', profile_files(g)))
     dlckf, dlckey = pkg.with_name(pkg.name + '.dlc.key'), None
-    def promote_dlc():
-        nonlocal g, provisional, env
-        assert derive_dlc is not None
-        g, provisional = derive_dlc(), True; inputs[1] = True
+    cskf, cskey, promoted = pkg.with_name(pkg.name + '.compute.key'), None, None
+    def promote(derive, kind):
+        nonlocal g, provisional, env, promoted
+        g, provisional, promoted = derive(), True, kind; inputs[1] = True
         env = dict(env, DM_GAMES_DIR=os.pathsep.join([str(g.dir.parent), env.get('DM_GAMES_DIR', '')]), DM_GAMES_FIRST='1')
     if not provisional and derive_dlc:
         dlckey = fingerprint(key, ('files', [Path(__file__)])) if key else None   # proof pins the comparison code as well as the registered tables and every split input
         if dlckey and reused(dlckf, dlckey) is not None:
-            promote_dlc()
+            promote(derive_dlc, 'dlc')
+            key = fingerprint(*inputs, ('files', profile_files(g)))
+    if not provisional and derive_compute:
+        cskey = fingerprint(key, ('files', [Path(__file__)])) if key else None
+        if cskey and reused(cskf, cskey) is not None:
+            promote(derive_compute, 'compute')
             key = fingerprint(*inputs, ('files', profile_files(g)))
     have_pairs = g.table('pso_pairs.tsv').is_file() or pkg.with_name('pso_pairs.tsv').is_file()
     if key and pkg.is_dir() and have_pairs and (note := reused(kf, key)) is not None:
@@ -1463,10 +1515,12 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
     if bad: say(f'{bad.group(0)}; the IPA goes without them (each file in {logs / "shader_split.log"})')
     if m and m.group(1) == '0':   # dmsh_build.py would make no library, and the iOS shader step stop with no word of why
         raise BuildError('the shader split found no shaders in main or the RomFS: the game keeps them in a form shader_split.py does not read; locate them (docs/agents) and add a reader')
-    # pso_pairs.tsv (agl BAHS program variations): checked like the others where the profile has one; else kept beside the
+    # pso_pairs.tsv (supplemental BAHS variations and legacy Unity pass-input covers): checked like the others where the profile has one; else kept beside the
     # package, where dmsh_build.py reads it too, so padding and the pipeline prebuild use the same pairs
     if not provisional and derive_dlc and dlc_only_shader_change(g, tmp / 'tables'):
-        promote_dlc()
+        promote(derive_dlc, 'dlc')
+    if not provisional and derive_compute and compute_reader_additions(g, tmp / 'tables', text):
+        promote(derive_compute, 'compute')
     if provisional or g.table('pso_pairs.tsv').is_file(): names += ('pso_pairs.tsv',)
     else: shutil.copyfile(tmp / 'tables' / 'pso_pairs.tsv', pkg.with_name('pso_pairs.tsv'))
     if provisional:   # a provisional profile takes the tables as they come
@@ -1480,8 +1534,10 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
     if key:   # an own profile's tables are outputs too; the next split checks the profile after they were written
         key = fingerprint(*inputs, ('files', profile_files(g)))
         kf.write_text(f'{key}\n{note}\n')
-    if provisional and dlckey: dlckf.write_text(f'{dlckey}\nDLC-only shader content\n')
+    if promoted == 'dlc' and dlckey: dlckf.write_text(f'{dlckey}\nDLC-only shader content\n')
     else: rmtree(dlckf)
+    if promoted == 'compute' and cskey: cskf.write_text(f'{cskey}\nNewly decoded compute kernels\n')
+    else: rmtree(cskf)
     PROG.end(note)
     return key and package_key(pkg)
 
@@ -1940,7 +1996,7 @@ def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA',
         other = [m for m, b in g.builds()[pkg_ver].items() if m != 'display' and (m, b) not in known]
         registered_builds = ", ".join(f'{v} {b["display"]}' for v, b in reg.builds().items())
         if g.title_id == reg.title_id and g.builds() == reg.builds():
-            say(f'this {artifact} uses the registered {pkg_ver} ({disp}) builds and every fix for them, with shader tables derived from the installed DLC')
+            say(f'this {artifact} uses the registered {pkg_ver} ({disp}) builds and every fix for them, with derived shader tables ({derived})')
         elif g.title_id != reg.title_id and not other and pkg_ver in reg.builds():   # a registered build under another title ID (same_build): every fix applies
             say(f'this {artifact} is game profile {reg.id}\'s {pkg_ver} ({disp}) under title ID {g.title_id:016X}: its settings and every fix for its builds, with shaders split from this title\'s own files')
         else: say(f'[RED] this {artifact} uses {pkg_ver} ({disp}), which game profile {reg.id} was not brought up on ({registered_builds}): '
@@ -2141,10 +2197,10 @@ def main(args=None):
         # Trinity packs and legacy Unreal paks: the split decodes them with the packed version's own decoder (Oodle, LZ5), in the Mac host built for the profile
         oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs, g)), 'DM_OODLE_MODULES': str(patched)}) if src['oodle_packs'][0] or src['ue_legacy'][0] else None
         own = bool(provisional or derived)   # the shader tables come from this build's split (the profile's are checked otherwise)
-        def derive_installed_dlc():   # called only after all registered non-DLC shader rows and facts matched
+        def derive_shader_tables(reason):   # called only after the strict DLC-only or additive-compute comparison passed
             nonlocal g, derived
             assert g is not None
-            derived = 'the installed DLC shader content differs from the registered tables'
+            derived = reason
             pdir = Path(os.path.expanduser(args.profile_out or PROFILE_OUT)).resolve() if (args.profile_out or PROFILE_OUT) else work / 'profile'
             derive_profile(g, pdir / g.id, pkg_ver, game, g.words('modules'), app, shader_only=True)
             os.environ['DM_GAMES_DIR'] = env['DM_GAMES_DIR'] = os.pathsep.join([str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)])
@@ -2152,7 +2208,9 @@ def main(args=None):
             g = gamemod.load(g.id)
             say(f'{derived}: using a shader-only derived profile at {g.dir}; registered module fixes are preserved')
             return g
-        pkey = split_shaders(py, repo, [rfs.source(dirs[v]) for v in sv], [dirs[v] / 'ExeFS/main' for v in sv], sh / 'pkg', env, logs, g, own, oodle, dlc_roms, derive_installed_dlc if not own else None)
+        derive_dlc = (lambda: derive_shader_tables('the installed DLC shader content differs from the registered tables')) if not own else None
+        derive_compute = (lambda: derive_shader_tables('the reader decoded additional compute kernels from this registered build')) if not own else None
+        pkey = split_shaders(py, repo, [rfs.source(dirs[v]) for v in sv], [dirs[v] / 'ExeFS/main' for v in sv], sh / 'pkg', env, logs, g, own, oodle, dlc_roms, derive_dlc, derive_compute)
         ios = build_shaders(py, repo, sh, xlate, env, logs, g, pkey, mac)
     icon = next((d / 'icon.jpg' for d in (game, base) if (d / 'icon.jpg').exists()), None)   # the game icon nx_extract saved from the control data (English, icon.jpg); the packed version's first, then the base game's
     motion = MOTION if args.motion is None else args.motion

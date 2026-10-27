@@ -3,7 +3,7 @@
 Each game the port knows has a folder `dm/games/<id>/`, named after the base game's title ID: Mario's is `010015100B514000`, Engage's `0100A6301214E000`. The folder holds:
 
 - **`game.tsv`**: the game's constants, one `key<TAB>value` row each, with comments on their own lines.
-- **The shader tables** that `shader_split.py` writes: `shader_map.tsv` (+ `.conflicts.tsv`), `shader_facts.tsv`, `shader_pairs.tsv`, and `pso_pairs.tsv` (agl BAHS program variations). Both pair tables feed vertex output padding and the pipeline prebuild; for a profile without `pso_pairs.tsv`, the NSP script keeps the generated table beside the shader package.
+- **The shader tables** that `shader_split.py` writes: `shader_map.tsv` (+ `.conflicts.tsv`), `shader_facts.tsv`, `shader_pairs.tsv`, and `pso_pairs.tsv` (supplemental agl BAHS program variations and legacy Unity pass-input covers). Both pair tables feed vertex output padding and the pipeline prebuild; for a profile without `pso_pairs.tsv`, the NSP script keeps the generated table beside the shader package.
 - **`shader_facts_manual.tsv`** (optional): hand-written translation facts in `shader_facts.tsv`'s row format, for what the machine code cannot tell (Link's Awakening: a vertex input the integer-input guess gets wrong; Breath of the Wild and Tears of the Kingdom: integer fragment outputs, which a game without a PC version has no other source for). `shader_split.py` merges it over the generated rows; since the table is on the chain, changing it changes only that profile's chain version.
 - **`pso_manifest.tsv`**: the prewarm seed list.
 - **`bench.tsv`** (optional): benchmark routes for `scripts/bench.py` ([A benchmark on the Mac](../../docs/development.md#a-benchmark-on-the-mac)): a name, the scripted input (`DM_KEYS`), the measured window and a description, one route per line.
@@ -101,6 +101,7 @@ One row per profile; the notes are each profile's `README.md`.
 | [Pokémon Sword](0100ABF008968000/README.md) | `0100ABF008968000` | 1.3.2 | 7.3.2 | Game Freak's engine (before Trinity) | NVN |
 | [Portal](01007BB017812000/README.md) | `01007BB017812000` | 1.0.3 | 13.3.0 | Valve's Source engine (28 NROs) | NVN |
 | [Raging Loop](010020400E1C2000/README.md) | `010020400E1C2000` | 1.0.0 (base) | 7.3.2 | Unity 2018.3.10f1 IL2CPP | NVN |
+| [Return of the Obra Dinn](010032E00E6E2000/README.md) | `010032E00E6E2000` | 1.0.1 | 8.2.0 | Unity 2017.4.28f1 IL2CPP | NVN |
 | [Rhythm Heaven Groove](0100D9F01D474000/README.md) | `0100D9F01D474000` | 1.0.0 (base) | 21.4.0 | Nintendo's own 2D engine | NVN |
 | [ROMANCE OF THE THREE KINGDOMS 8 REMAKE](0100C2A01A730000/README.md) | `0100C2A01A730000` | 1.1.3 | 17.5.3 | Koei Tecmo's KTGL | NVN |
 | [Sea of Stars](01008C0016544000/README.md) | `01008C0016544000` | 2.0.59001 | 16.2.0 | Unity 2021.3.25f1 IL2CPP | NVN |
