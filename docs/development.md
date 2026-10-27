@@ -56,6 +56,38 @@ tests, Mac builds for NVN/Vulkan/OpenGL profiles, and iOS source compilation.
 It also runs the CPU texture layout/deswizzle test (`dm/gfx/tex/tests/t_tex`)
 and the host's `tsan` and `memory-tsan` targets for audio and memory races.
 The texture format test (`t_fmt_mtl`) creates Metal textures and stays local.
+All five macOS jobs, including the sanitizer job, run with the toolchain the
+project supports: Xcode 27.1 on GitHub's `xcode-27` image, named by path in
+`DEVELOPER_DIR` so a new default Xcode on the image does not change CI. The
+build check first compares the image's Metal compiler with `dmsh_chain.lock`
+(`own_compilers.py --check-metal`), and `dm/tools/tests/test_ci_toolchain.py`
+keeps the workflow, the image, README and the NSP script naming the same
+Xcode: raising the toolchain changes them together.
+
+A separate `sanitizers` job builds the same tests again with sanitizers, each
+build in a folder of its own (`build/asan`, `build/tsan`, `asan/`): every host
+unit test and the CPU texture test under AddressSanitizer and
+UndefinedBehaviorSanitizer (`asan`), and the host tests that start threads under
+ThreadSanitizer (`tsan-threads`). Documented exceptions live in
+`dm/sanitizers/`: ASan and UBSan in `ignorelist.txt` (compile time), TSan in
+`tsan.supp` (run time). These cover custom HLE sections, synthetic NRO offsets,
+an intentionally unjoined test and uninstrumented CoreAudio synchronization.
+The job fails on other findings. The initial header-alignment, AudioUnit
+publication and thread-registration bugs were fixed and their suppressions
+removed ([audio](reference/audio.md#unaligned-command-headers-during-layout-probing),
+[AudioUnit publication](reference/audio.md#audiounit-construction-before-output-publication),
+[thread registration](reference/threads.md#publishing-a-new-threads-scheduler-fields)). To run it
+locally (about a minute on an Apple-silicon Mac):
+
+```sh
+make -C dm/host/tests GAME=010015100B514000 -j8 asan tsan-threads
+make -C dm/gfx/tex/tests asan
+```
+
+A new finding is fixed, not listed, unless its cause lies outside the code under
+test (an uninstrumented system framework, a test fixture); then it gets an entry
+with its reason. A fix removes any existing entry in the same change: the job
+then checks the repaired code. A change to `ignorelist.txt` rebuilds the ASan tests.
 
 A separate iOS job uses XcodeGen and the production project template to compile
 `Launcher.swift`, link the complete app and stage synthetic resources. It uses
