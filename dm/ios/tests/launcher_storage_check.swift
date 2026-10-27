@@ -39,6 +39,21 @@ import Foundation
         expect(!m.rows(in: "Controls").contains { $0.env == "DM_RUMBLE_GAIN" }, "a sub-setting is hidden while its setting is off")
         expect(m.rows(in: "Controls").contains { $0.env == "DM_RUMBLE" }, "the setting it depends on stays drawn")
         m.values["DM_RUMBLE"] = "1"
+        // DM_LAUNCHER=0 skips the screen, not the saved choices; DM_SAVED_CHOICES=0 ignores them and leaves them stored
+        let fps = file.settings.first { $0.env == "DM_FPS_TARGET" }!
+        d.set("30", forKey: "launcher.DM_FPS_TARGET"); unsetenv("DM_FPS_TARGET")
+        LauncherModel(file.settings, defaults: d).applySaved()
+        expect(String(cString: getenv("DM_FPS_TARGET")) == "30" && d.string(forKey: "launcher.DM_FPS_TARGET") == "30", "without the screen, a saved choice goes into the environment and stays saved")
+        setenv("DM_SAVED_CHOICES", "0", 1); unsetenv("DM_FPS_TARGET")
+        let plain = LauncherModel(file.settings, defaults: d)
+        expect(plain.values["DM_FPS_TARGET"] == fps.def, "DM_SAVED_CHOICES=0 starts from the defaults")
+        plain.applySaved()
+        expect(getenv("DM_FPS_TARGET") == nil, "DM_SAVED_CHOICES=0: nothing saved goes into the environment")
+        plain.apply()
+        expect(String(cString: getenv("DM_FPS_TARGET")) == fps.def && d.string(forKey: "launcher.DM_FPS_TARGET") == "30", "DM_SAVED_CHOICES=0: Play uses the screen's values and leaves the saved choices")
+        plain.reset()
+        expect(d.string(forKey: "launcher.DM_FPS_TARGET") == "30", "DM_SAVED_CHOICES=0: Reset leaves the saved choices too")
+        unsetenv("DM_SAVED_CHOICES")
         print("launcher storage: \(failed) failed")
         exit(failed == 0 ? 0 : 1)
     }

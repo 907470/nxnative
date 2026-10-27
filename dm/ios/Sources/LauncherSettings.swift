@@ -33,6 +33,7 @@ struct SettingsFile: Decodable { let settings: [Setting] }
 final class LauncherModel: ObservableObject {
     let settings: [Setting]
     let fromFile: Set<String>   // set by an env file: shown, not changed
+    let ignoreSaved: Bool   // DM_SAVED_CHOICES=0: start from the defaults, and leave the saved choices as they are
     @Published var values: [String: String] = [:]
 
     private let defaults: UserDefaults
@@ -41,9 +42,11 @@ final class LauncherModel: ObservableObject {
         self.defaults = defaults
         self.settings = settings
         fromFile = Set((ProcessInfo.processInfo.environment["DM_ENV_FILE_KEYS"] ?? "").split(separator: " ").map(String.init))
+        ignoreSaved = ProcessInfo.processInfo.environment["DM_SAVED_CHOICES"] == "0"
+        if ignoreSaved { fputs("launcher: saved choices ignored (DM_SAVED_CHOICES=0)\n", stderr) }
         for s in settings {
             if fromFile.contains(s.env), let v = ProcessInfo.processInfo.environment[s.env] { values[s.env] = v; continue }
-            let saved = defaults.string(forKey: "launcher." + s.env)
+            let saved = ignoreSaved ? nil : defaults.string(forKey: "launcher." + s.env)
             values[s.env] = saved.flatMap { s.accepts($0) ? $0 : nil } ?? s.def   // a saved choice the game no longer offers: its default
         }
     }
@@ -63,10 +66,10 @@ final class LauncherModel: ObservableObject {
     func rows(in section: String) -> [Setting] { settings.filter { $0.sectionTitle == section && visible($0) } }
     var changed: Bool { settings.contains { !fromFile.contains($0.env) && !$0.isDefault(values[$0.env] ?? $0.def) } }
 
-    // Reset every launcher choice to the game's defaults; an env file's values stay.
+    // Reset every launcher choice to the game's defaults; an env file's values stay, and with DM_SAVED_CHOICES=0 so does the store.
     func reset() {
         for s in settings {
-            defaults.removeObject(forKey: "launcher." + s.env)
+            if !ignoreSaved { defaults.removeObject(forKey: "launcher." + s.env) }
             if !fromFile.contains(s.env) { values[s.env] = s.def }
         }
         fputs("launcher: settings reset to the game's defaults\n", stderr)
@@ -78,8 +81,16 @@ final class LauncherModel: ObservableObject {
         for s in settings {
             let v = values[s.env] ?? s.def
             if fromFile.contains(s.env) { fputs("launcher: \(s.env) kept at \(v) (env file)\n", stderr); continue }
-            if s.isDefault(v) { defaults.removeObject(forKey: "launcher." + s.env) } else { defaults.set(v, forKey: "launcher." + s.env) }
+            if !ignoreSaved { if s.isDefault(v) { defaults.removeObject(forKey: "launcher." + s.env) } else { defaults.set(v, forKey: "launcher." + s.env) } }
             setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v)\(s.isDefault(v) ? "" : " (changed)")\n", stderr)
+        }
+    }
+
+    // DM_LAUNCHER=0: no screen, but the saved choices still apply (only DM_SAVED_CHOICES=0 ignores them); nothing is written
+    func applySaved() {
+        for s in settings where !fromFile.contains(s.env) {
+            let v = values[s.env] ?? s.def
+            if !s.isDefault(v) { setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v) (saved choice)\n", stderr) }
         }
     }
 }
