@@ -71,6 +71,9 @@ else:
 #     the repository's rules, an external-only provisional profile its own. Missing or ambiguous matches are reported and skipped; known builds retain their exact CUTS.
 #     A rule of several functions applies whole or not at all. For such a module <name>.match.tsv lists the cuts of the profile's registered builds of it and each patch's result,
 #     which the NSP script reports with the build (what an unregistered build lost)
+#   sdk_patches.py's MATCH_CUTS are SDK-wide: every game's module of that name, when its build has no CUTS and the selected game's profile was not brought up on it (its build
+#     rows), so the games' registered builds rewrite as before. They are fixes of Nintendo's code that hold for any game on a platform with a small address space; a build
+#     without a reviewed implementation of one keeps the original code, logged but not red (games without virtual address memory never reach it)
 PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
 # Profiles outside the repository (DM_GAMES_DIR, folders separated by os.pathsep, which is ':' as in dm/games/game.py: the NSP script's provisional profile of a game being brought up) may have a
 # patches.py of their own builds too; they are loaded after the repository's, under the same rule (a build ID claimed twice stops the rewrite)
@@ -79,10 +82,14 @@ patch_paths = {}
 for path in PATCH_FILES: patch_paths.setdefault(os.path.realpath(path), path)   # repeated roots and symlinks name the same file, not competing build claims
 PATCH_FILES = list(patch_paths.values())
 def load_patches():
-    tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}, 'MATCH_CUTS': {}}, {}
+    tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}, 'MATCH_CUTS': {}, 'SDK_MATCH_CUTS': {}}, {}
     for n, path in enumerate(PATCH_FILES):
         spec = importlib.util.spec_from_file_location(f'patches_{n}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         for kind, table in tables.items():
+            if kind == 'SDK_MATCH_CUTS': continue
+            if kind == 'MATCH_CUTS' and os.path.basename(path) == 'sdk_patches.py':   # SDK-wide
+                tables['SDK_MATCH_CUTS'] = getattr(m, kind, {})
+                continue
             if kind == 'MATCH_CUTS':
                 profile = os.path.basename(os.path.dirname(path))
                 roots = [os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games')] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d]
@@ -100,10 +107,8 @@ cuts = list(PATCHES['CUTS'].get(BUILD_ID, []))
 if BUILD_ID not in PATCHES['CUTS']:
     from nso_match import resolve
     profile = os.path.basename(os.environ.get('DM_GAME', '').rstrip('/'))
-    rules, outcomes = PATCHES['MATCH_CUTS'].get(profile, {}).get(NAME, []), []
-    cuts += resolve(IMG, TEXT_END, rules, outcomes=outcomes)
-    # the repository profile's build rows (a derived profile replaces them with its own version's): what the registered builds of this module had cut
-    known, rows = [], []
+    # the repository profile's build rows (a derived profile replaces them with its own version's): the builds of this module the game was brought up on, and what they had cut
+    known, rows, own = [], [], set()
     try:
         if profile:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games', profile, 'game.tsv'), encoding='utf-8') as f: rows = f.read().splitlines()
@@ -112,13 +117,19 @@ if BUILD_ID not in PATCHES['CUTS']:
         c = [x.strip() for x in row.split('\t')]
         if c[0] == 'build' and len(c) > 3:
             bid = dict(x.split('=', 1) for x in c[3:] if '=' in x).get(NAME)
+            if bid: own.add(bid)
             if bid and bid != BUILD_ID and PATCHES['CUTS'].get(bid): known.append((bid, c[2], len(PATCHES['CUTS'][bid])))
-    if known or outcomes:
+    outcomes, sdk_outcomes = [], []
+    cuts += resolve(IMG, TEXT_END, PATCHES['MATCH_CUTS'].get(profile, {}).get(NAME, []), outcomes=outcomes)
+    if BUILD_ID not in own:
+        cuts += resolve(IMG, TEXT_END, PATCHES['SDK_MATCH_CUTS'].get(NAME, []), outcomes=sdk_outcomes, red=False)
+    if BUILD_ID not in own and (known or outcomes or sdk_outcomes):   # a build the game was brought up on lost nothing
         os.makedirs(outdir, exist_ok=True)
         with open(os.path.join(outdir, NAME + '.match.tsv'), 'w') as f:
-            f.write(f'# {NAME} {BUILD_ID}: not a registered build. registered: build ID, display version, cuts; patch: name, cut offsets or -, implementation or why not\n')
+            f.write(f'# {NAME} {BUILD_ID}: not a registered build. registered: build ID, display version, cuts; patch (the game profile\'s) or sdk (SDK-wide): name, cut offsets or -, implementation or why not\n')
             for bid, disp, n in known: f.write(f'registered\t{bid}\t{disp}\t{n}\n')
-            for name, offs, why in outcomes: f.write(f'patch\t{name}\t{",".join(f"{o:#x}" for o in offs) if offs else "-"}\t{why}\n')
+            for kind, got in (('patch', outcomes), ('sdk', sdk_outcomes)):
+                for name, offs, why in got: f.write(f'{kind}\t{name}\t{",".join(f"{o:#x}" for o in offs) if offs else "-"}\t{why}\n')
 for off, ob, nb, why in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'cut original bytes mismatch {off:#x}: {bytes(IMG[off:off + len(ob)]).hex()}'
