@@ -2,7 +2,8 @@
 // Checks: pipelines that differ only in colour state share one base; a specialized pipeline draws the same pixels as one built through the MTLDevice; a flushed archive
 // file serves the base again without compiling; a flush of bases without a vertex layout is a p<seq> file, where a base with a layout is not looked up; a function with no
 // Metal 4 descriptor keeps the MTLDevice path; pso_key_norm drops what no pipeline depends on; compaction merges the files the prewarm took bases from into one despite a
-// mid-prewarm flush; depth-only draws write depth; concurrent colour variants compile one base; a flush removes the build folder Metal made for its captures
+// mid-prewarm flush, and a compaction that did not finish is not tried again on the same system build; depth-only draws write depth; concurrent colour variants compile
+// one base; a flush removes the build folder Metal made for its captures
 #include "../nvn/nvn_mtl.m"
 uint64_t g_t0_ns;
 int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; }
@@ -28,6 +29,15 @@ static id<MTLCommandQueue> g_q;
     if (!call) { dispatch_semaphore_signal(entered); dispatch_semaphore_wait(release, DISPATCH_TIME_FOREVER); }
     if (fail) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:nil]; return nil; }
     return [compiler newRenderPipelineStateWithDescriptor:d compilerTaskOptions:opts error:error];
+}
+@end
+// Notes whether the compaction marker exists while the serializer writes (issue #342: a flush that does not return leaves it)
+@interface MarkerSerializer : NSObject { @public id<MTL4PipelineDataSetSerializer> ser; int calls, marked; } @end
+@implementation MarkerSerializer
+- (id)forwardingTargetForSelector:(SEL)selector { return ser; }
+- (BOOL)serializeAsArchiveAndFlushToURL:(NSURL *)url error:(NSError **)error {
+    calls++; marked += [NSFileManager.defaultManager fileExistsAtPath:arch_compact_marker()];
+    return [ser serializeAsArchiveAndFlushToURL:url error:error];
 }
 @end
 // a full-screen triangle; colour 0 = (0.5, 0.25, 1, 0.5), colour 1 = (0.2, 0.4, 0.6, 0.8); attribute 0 (a float4) scales nothing, so a vertex descriptor is part of the pipeline
@@ -208,9 +218,21 @@ int main(void) { @autoreleasepool {
         EXPECT("compaction: every base from the archive", arch0 + descs.count, g_pb_archived);
         EXPECT("compaction: none compiled", built0, g_pb_built);
         EXPECT("compaction: every base captured again", descs.count, g_compacted);
+        MarkerSerializer *ms = [MarkerSerializer new]; ms->ser = g_ser4; g_ser4 = (id<MTL4PipelineDataSetSerializer>)ms;
         arch_flush_now(); dispatch_sync(g_arch_q, ^{});
+        g_ser4 = ms->ser;
+        EXPECT("compaction: the marker exists while the flush writes", 1, ms->calls == 1 && ms->marked == 1);
+        EXPECT("compaction: the flush that returned removed the marker", 0, [NSFileManager.defaultManager fileExistsAtPath:arch_compact_marker()]);
         names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:@(cdir) error:nil];
         EXPECT("compaction: one file left", 1, names.count);
+        // a marker left by a compaction that did not finish: the next start on this system build does not compact, one from another build is removed and compaction tried
+        EXPECT("compaction: allowed without a marker", 1, arch_compact_allowed());
+        [arch_os_build() writeToFile:arch_compact_marker() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        EXPECT("compaction: not after one that did not finish on this system build", 0, arch_compact_allowed());
+        EXPECT("compaction: that marker stays", 1, [NSFileManager.defaultManager fileExistsAtPath:arch_compact_marker()]);
+        [@"os\t1A1\n" writeToFile:arch_compact_marker() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        EXPECT("compaction: tried again on another system build", 1, arch_compact_allowed());
+        EXPECT("compaction: the other build's marker removed", 0, [NSFileManager.defaultManager fileExistsAtPath:arch_compact_marker()]);
         nvn_hm_clear(&g_pbase, hm_rel); g_compact_opts = nil; g_compacted = 0;
         g_arch4 = @[[g_dev newArchiveWithURL:[NSURL fileURLWithPath:[@(cdir) stringByAppendingPathComponent:names.firstObject]] error:&err]];
         arch0 = g_pb_archived; built0 = g_pb_built;

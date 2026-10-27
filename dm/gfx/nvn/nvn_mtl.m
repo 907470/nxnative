@@ -4940,6 +4940,19 @@ static NSArray<id<MTL4Archive>> *g_arch4, *g_arch4p; static NSString *g_arch_dir
 // prewarm did not take (pso_user.tsv never named them) go with them and are built again when drawn. The prebuild's files (p<seq>) are left as they are
 enum { PSO_ARCH_COMPACT = 8 };
 static MTL4CompilerTaskOptions *g_compact_opts; static NSArray<NSString *> *g_compact_files; static _Atomic int g_compacted;
+// A compaction flush crashed in Metal on an M5 Max (macOS 27.0.1, issue #342: SIGSEGV in -[_MTLBinaryArchive materializeAirNTFromOnlineForSlice:entryList:], the AIR of a
+// captured function was nil; why it was nil is open, not reproduced on an M4 Pro). The old files stay when the flush does not return, so every later start compacted and crashed
+// again. pso_archive/compacting is written before that flush and removed when it returns: one found at start means a compaction did not finish, and the next starts on the same
+// system build leave the files as they are (an OS update tries once more). A workaround: the crash's cause is not known
+static NSString *arch_compact_marker(void) { return [g_arch_dir stringByAppendingPathComponent:@"compacting"]; }
+static NSString *arch_os_build(void) { char b[64] = ""; size_t n = sizeof b; sysctlbyname("kern.osversion", b, &n, NULL, 0); return [NSString stringWithFormat:@"os\t%s\n", b]; }
+static int arch_compact_allowed(void) {
+    NSString *m = [NSString stringWithContentsOfFile:arch_compact_marker() encoding:NSUTF8StringEncoding error:nil];
+    if (!m) return 1;
+    if ([m isEqualToString:arch_os_build()]) { MLOG("[RED] pipeline archive: a compaction did not finish on this system build (issue #342): the files are left as they are"); return 0; }
+    unlink(arch_compact_marker().fileSystemRepresentation);   // written on another system build: try once more
+    return 1;
+}
 static _Atomic int g_arch_new_vd;   // bases with a vertex layout captured since the last flush (counted under g_arch_rw's read side, read under its write side)
 static dispatch_queue_t g_arch_q; static _Atomic int g_arch_new, g_arch_sched;
 // Compiles with the serializer attached hold this shared, a flush holds it alone: a compile that finishes during serializeAsArchiveAndFlushToURL crashed in Metal
@@ -5133,7 +5146,7 @@ static void pso4_init(void) {
                 else MLOG("[RED] pipeline archive file %s not usable (%s): its bases are built again", p.UTF8String, ae ? ae.localizedDescription.UTF8String : "not a pipeline archive");
                 g_arch_seq = MAX(g_arch_seq, [n substringFromIndex:pf].intValue + 1);
             }
-            if (runf.count > PSO_ARCH_COMPACT) { g_compact_opts = [MTL4CompilerTaskOptions new]; g_compact_opts.lookupArchives = arch; g_compact_files = runf; }
+            if (runf.count > PSO_ARCH_COMPACT && arch_compact_allowed()) { g_compact_opts = [MTL4CompilerTaskOptions new]; g_compact_opts.lookupArchives = arch; g_compact_files = runf; }
             MLOG("pipeline archive %s: %lu files (%lu of bases without a vertex layout), %.1f MB, opened in %.1f ms", g_arch_dir.UTF8String, (unsigned long)(arch.count + archp.count - (g_arch_bundle != nil)),
                  (unsigned long)archp.count - (g_arch_bundle != nil), bytes / 1048576.0, (bp_now() - t0) / 1e6);
         }
@@ -5158,7 +5171,10 @@ static void arch_flush(void) {
     int vd = atomic_exchange(&g_arch_new_vd, 0);   // exact: no compile is between capture and count while the write side is held
     NSString *path = [g_arch_dir stringByAppendingPathComponent:[NSString stringWithFormat:vd ? @"%05d.mtl4a" : @"p%05d.mtl4a", g_arch_seq++]], *tmp = [path stringByAppendingString:@".tmp"];
     NSSet<NSString *> *ga_before = atomic_load(&g_ga_recap) ? ga_list() : nil;
+    int compacting = g_compact_files && g_compacted;   // this flush holds the recaptured bases (see arch_compact_allowed)
+    if (compacting) [arch_os_build() writeToFile:arch_compact_marker() atomically:YES encoding:NSUTF8StringEncoding error:nil];
     BOOL ok = [g_ser4 serializeAsArchiveAndFlushToURL:[NSURL fileURLWithPath:tmp] error:&e];
+    if (compacting) unlink(arch_compact_marker().fileSystemRepresentation);
     if (ok) ga_flushed(ga_before);
     pthread_rwlock_unlock(&g_arch_rw);
     ok = ok && !rename(tmp.fileSystemRepresentation, path.fileSystemRepresentation);
