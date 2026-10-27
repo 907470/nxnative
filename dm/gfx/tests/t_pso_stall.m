@@ -1,5 +1,5 @@
 // A compile that does not return (GitHub issue #294: a base Apple's compiler cannot build) holds back only the file of its own flush period (ArchEpoch in nvn_mtl.m). A compiler
-// that holds one pixel shader's compile stands in for it. Checks, while it is held: the prebuild hands out every pair and builds the others;
+// that holds one pixel shader's compile stands in for it. Checks, while it is held: the prebuild hands out every pair (where the prepare step stops waiting) and builds the others;
 // a draw's compile goes through; a flush of a later period writes its file. Once released: its period is written, the prebuild finishes and stamps, nothing is left to write
 #include "../nvn/nvn_mtl.m"
 uint64_t g_t0_ns;
@@ -60,7 +60,7 @@ int main(void) { @autoreleasepool {
     hold->entered = dispatch_semaphore_create(0); hold->release = dispatch_semaphore_create(0); ep1->comp = (id<MTL4Compiler>)hold;
     EXPECT("three pairs", 3, pso_prebuild(2, 0, QOS_CLASS_USER_INITIATED));
     EXPECT("held: the compile of f1 entered", 0, dispatch_semaphore_wait(hold->entered, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)));
-    EXPECT("held: every pair handed out", 1, until(^{ return (int)(atomic_load(&g_pre_next) >= 3); }, 10));
+    EXPECT("held: every pair handed out (the prepare step stops waiting)", 1, until(^{ return (int)(atomic_load(&g_pre_next) >= 3); }, 10));
     EXPECT("held: the other pairs built", 1, until(^{ return (int)(g_pre_done == 2); }, 10));
     EXPECT("held: the prebuild not done", 1, g_pre_running);
 
