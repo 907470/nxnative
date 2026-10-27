@@ -191,6 +191,14 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** the host reports add-on content from `DM_AOC_DIR`, one numbered folder per DLC index (title ID − base − 0x1000) holding that DLC's RomFS. `build_ipa_from_nsp.py` extracts the DLC NSPs in the folder with `nx_extract --aoc`, `build_ipa.sh` copies them to `<App>/aoc/`, and the app sets `DM_AOC_DIR`. `aoc::CountAddOnContent` / `ListAddOnContent` report those indices (`hle_misc.c`), and `fs::MountAddOnContent` mounts the folder read-only (`hle_fs.c`). D2R keeps its fixed `{1}` without `DM_AOC_DIR`; `DM_AOC_OWNED=0` reports none.
 - **Found on:** [Fire Emblem Engage](../../dm/games/0100A6301214E000/README.md): its two DLC packages each hold one empty marker file (`e0`, `h0`), and the content is already in update 2.0.0. `DLCManager.RefreshHasList` marks a content owned when its mount succeeded (probe `main+0x29f3c88`).
 
+### Owned add-on content lists beyond 64 entries
+
+- **Symptom:** some owned DLC is missing, and `aoc: reporting` stops at 64 add-on contents.
+- **Cause:** `hle_misc.c` stored only 64 indices and stopped reading `DM_AOC_DIR` when that array filled, before sorting. The omitted indices depended on directory order; its 256-byte log buffer also truncated longer lists.
+- **Fix:** the shared array holds 2000 indices, covering the scanner's existing accepted range (1..2000), and a static buffer holds the complete index log without increasing guest-stack use. Folder and `.img` discovery, sorting, deduplication, pagination and `DM_AOC_OWNED=0` retain their behavior. This applies to every game using the add-on content hooks.
+- **Open:** the existing 1..2000 acceptance range is retained; it is not established here as Horizon's full legal range. More than 2000 accepted folder/image entries can still fill the array before deduplication, even when their unique indices fit.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md) (13.0.5, 99 DLC licences; PR #441).
+
 ### Add-on content mount cache sized as RomFS working memory
 
 - **Symptom:** SIGSEGV in `crypto::detail::CbcModeAes128Helper::DecryptBlocks` with a null destination (`main+0x8737e8`, right after `aoc:` is mounted).
