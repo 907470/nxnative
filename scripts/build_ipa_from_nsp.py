@@ -513,6 +513,13 @@ def pick_nsps(fam, have, versions):
     return out
 
 
+def extract_bytes(picks, clones):
+    """What the extraction writes, estimated from the NSPs' sizes. Later versions clone the base game's RomFS when the base is extracted alone (v0) and the volume supports clones:
+    then each NSP counts once (by path: two NSPs can have the same size). Otherwise every version is a full copy of the base game with its update"""
+    if clones and any(u is None for _, u in picks.values()): return sum(p.stat().st_size for p in {p for b, u in picks.values() for p in (b, u) if p})
+    return sum(b.stat().st_size + (u.stat().st_size if u else 0) for b, u in picks.values())
+
+
 def can_clone(d):   # whether this volume supports APFS clones (nx_extract uses them to save space; without them it writes full copies)
     a, b = d / '.clone_test', d / '.clone_test2'
     try:
@@ -1976,7 +1983,7 @@ def main(args=None):
     picks = pick_nsps(fam, have, versions)
 
     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
-    gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6   # extraction + shader cache + slack
+    gb = extract_bytes(picks, can_clone(ex)) / 2**30 + 6   # extraction + shader cache + slack
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
     heapck = provisional and HEAP_CHECK and not args.no_heap_check and not heap_checked(g)   # the heap check, when the game needs one (once per provisional profile: it stamps the profile)
     PROG.plan(1 + len(versions) + bool(fam['dlc']) + 4 - (prepare_xcode or (mac and not mac_pack)))   # prepare Xcode (a Mac-only build: the Mac host) replaces app build + IPA pack with one stage (a Mac app: Mac host + Mac app)
