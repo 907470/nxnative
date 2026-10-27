@@ -217,6 +217,14 @@ ComputeShaderCB: string name; int byteSize; vector<data:ComputeShaderParam> para
 ComputeShaderPlatformVariant: int targetRenderer; int targetLevel; vector<data:ComputeShaderKernelParent> kernels; vector<data:ComputeShaderCB> constantBuffers; bool! resourcesResolved
 ComputeShader: string m_Name; vector<data:ComputeShaderPlatformVariant> variants
 '''
+# Unity 2021.3.18f1 (Shin chan: Shiro and the Coal Town, PR #440): checked against all 144 nodes and alignment flags
+# of AssetRipper's StructsDump/release/2021.3.18f1.dump. Code is bytes in both layouts; 2021.3 stores keyword variants
+# in a map and uses a staticvector for threadGroupSize. Keep resourcesResolved aligned between platform variants.
+COMPUTE_2021_3 = COMPUTE_2022_3.replace(
+    'vector<data:ComputeShaderKernel> uniqueVariants; vector<data:pair(string,unsigned int)> variantIndices',
+    'map<data:pair(string,ComputeShaderKernel)>~ variantMap').replace(
+    '; vector<data:string> dynamicKeywords', '').replace(
+    'vector<data:unsigned int>~ threadGroupSize', 'staticvector<data:unsigned int>~ threadGroupSize')
 # Unity 2019.4.27f1's release tree (AssetRipper TypeTreeDumps, StructsDump/release/2019.4.27f1.dump): kernels hold code directly, without keyword variants or requirements.
 # Pokemon Brilliant Diamond's stripped built-ins use this hash; their GPU skinning dispatch needs these kernels. Checked against the dump's nodes and alignment flags.
 COMPUTE_2019_4 = '''ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension
@@ -239,6 +247,7 @@ KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005'))
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
                (CLASS_SHADER, bytes.fromhex('266d53113fa30d2b858f2768f92eaa14')): ('Shader', SHADER_2017_4),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3),
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('abd9135b8ce83d043fef4e9ec7f53366')): ('ComputeShader', COMPUTE_2021_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('1a95529ac2eb1a97cd9d2a4356bd722f')): ('ComputeShader', COMPUTE_2019_4),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('20291e020d10074c35d8286f5191593f')): ('ComputeShader', COMPUTE_2017_4)}
 
