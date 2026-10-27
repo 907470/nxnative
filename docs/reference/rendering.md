@@ -404,6 +404,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** the builder's mode now goes to the texture (`tex_t.stencil`), whose sampling view is the `X32_Stencil8` one a stencil-mode texture view already got.
 - **Found on:** [DRAGON QUEST VII Reimagined](../../dm/games/0100A9D01C446000/README.md) (the character occlusion mask, `edbfc7a088be545e`).
 
+### Conservative rasterization remains unimplemented
+
+- **Symptom:** `[nvn] SetConservativeRasterEnable on: ignored by host for now`, followed by `[RED] NVN unimplemented function called: nvnCommandBufferSetConservativeRasterDilate`.
+- **Cause:** `hle_nvn.c` ignores the enable setter and has no implementation for the dilation setter. The requested raster coverage state never reaches Metal.
+- **Fix:** **Open.** Neither setter has been implemented. The opening indoor scene renders and accepts input, but the visual contribution of the missing coverage state has not been isolated. The diagnostic remains visible.
+- **Found on:** [Pokémon Scarlet](../../dm/games/0100A3D008C5C000/README.md#open) (1.0.0, the first playable bedroom).
+
 ## Vertex input and draws
 
 ### Integer vertex inputs
