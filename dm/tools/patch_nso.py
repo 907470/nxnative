@@ -684,7 +684,7 @@ def jump_masked_not(insl, j):
     _, ent, base = add.op_str.split(', '); ka = ctx.index(add)
     ld = next((p for p in reversed(ctx[:ka]) if p.mnemonic == 'ldrsw' and re.fullmatch(rf'{ent}, \[{base}, x\d+, lsl #2\]', p.op_str)), None)
     if not ld: return None
-    kl = ctx.index(ld); idx = re.fullmatch(rf'{ent}, \[{base}, (x\d+), lsl #2\]', ld.op_str).group(1)
+    kl = ctx.index(ld); idx = ld.op_str.split(', ')[2]
     if base in (ent, idx): return None
     mask = next((p for p in reversed(ctx[:kl]) if p.mnemonic == 'and' and re.fullmatch(rf'{idx}, x\d+, #(0x[0-9a-f]+|\d+)', p.op_str)), None)
     if not mask: return None
@@ -701,7 +701,7 @@ def jump_masked_not(insl, j):
     if head <= branch.operands[0].imm <= end: return None
     def writes(p, reg):
         if p.mnemonic in ('cmp', 'cmn', 'tst'): return False
-        if p.mnemonic in ('bl', 'blr') and num(reg) <= 18: return True
+        if p.mnemonic in ('bl', 'blr') and int(reg[1:]) <= 18: return True
         return any(p.reg_name(r).replace('w', 'x', 1) == reg for r in p.regs_access()[1])
     if any(writes(p, idx) for p in ctx[km + 1:kl]) or any(writes(p, ent) for p in ctx[kl + 1:ka]) or \
        any(writes(p, base) for p in ctx[kl + 1:ka + 1]) or any(writes(p, 'x18') for p in ctx[ka + 1:-1]): return None
