@@ -109,6 +109,7 @@ static pthread_cond_t g_link_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t g_link_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_link_tick_ns, g_link_tick_n;
 static uint64_t g_link_dropped;
+static uint64_t g_link_empty;   // Under g_pq_mu: ticks that found no new frame queued (counted here, not as ticks minus presents: presents before the link starts and while it is rescued are not on ticks)
 static double g_link_hold_until; static uint64_t g_link_held;   // Changed only on the display-link callback thread: the time the previous frame must stay on screen until by its present interval (0 = no hold), and the ticks that took no new frame because of it
 static int g_pq_inflight;   // Under g_pq_mu: number of presents committed to the GPU whose completion callback has not arrived yet
 int g_dm_present_link;   // Present pacing mode (runtime value of DM_PRESENT_LINK, modified directly during same-process alternating measurement): 0 = acquire the drawable itself; 1 = display link at 60 Hz; 2 = display link at 120 Hz, the game presents a frame every other display-link tick
@@ -10411,7 +10412,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
             double b[300]; memcpy(b, e2e, sizeof b);
             for (int i = 1; i < 300; i++) { double v = b[i]; int j = i - 1; while (j >= 0 && b[j] > v) { b[j + 1] = b[j]; j--; } b[j + 1] = v; }
             MLOG("display link up to tick %llu: ticks 300, presents %llu, empty ticks %llu (held for the present interval %llu), old frames dropped by merging %llu; submission ahead of target display p50 %.3f ms / min %.3f ms; game enqueue to target display p50 %.3f ms / min %.3f / max %.3f ms",
-                 (unsigned long long)g_link_tick_n, (unsigned long long)g_present_n, (unsigned long long)(g_link_tick_n - g_present_n), (unsigned long long)g_link_held,
+                 (unsigned long long)g_link_tick_n, (unsigned long long)g_present_n, (unsigned long long)g_link_empty, (unsigned long long)g_link_held,
                  (unsigned long long)g_link_dropped, a[149], a[0], b[149], b[0], b[299]);
         }
     }
@@ -10489,7 +10490,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     pthread_cond_broadcast(&g_link_cv);
     pthread_mutex_unlock(&g_link_mu);
     pthread_mutex_lock(&g_pq_mu);
-    if (!g_dm_present_link || g_rescue_mode || g_pq_read == g_pq_in) { pthread_mutex_unlock(&g_pq_mu); return; }
+    if (!g_dm_present_link || g_rescue_mode || g_pq_read == g_pq_in) { if (g_dm_present_link && !g_rescue_mode) g_link_empty++; pthread_mutex_unlock(&g_pq_mu); return; }
     // The previous frame's present interval was >= 2 (period > 25 ms): keep it on screen for its whole period before taking the next one, as the Switch flips only every N vertical syncs. This also holds while the link runs at 60 Hz (Mario 1.2.1 sets 2 for single frames, see nvn_game_fps in hle_nvn.c);
     //   before, every tick took the newest frame, so that frame, carrying the extra time step the game advanced for it, was shown for only 16.7 ms and the game looked like it jumped ahead
     if (g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol) { g_link_held++; pthread_mutex_unlock(&g_pq_mu); return; }
