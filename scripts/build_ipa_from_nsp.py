@@ -1813,7 +1813,7 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, 
     lib = msl / (f'b-{chain_of(repo)}' if gfx == 'nvn' else 'vk' if gfx == 'vulkan' else 'gl')
     pso = mac_pso(py, repo, work, lib, g, gpus, env, logs) if gfx == 'nvn' and g.table('shader_pairs.tsv').is_file() else None   # a stage of its own, before the app's
     PROG.stage('Mac app', step='starting')
-    # The launcher settings the IPA carries (dm/games/settings.py), without the iPhone's own switches: a Mac front end shows them and starts the app with them
+    # The launcher settings the IPA carries (dm/games/settings.py), without the iPhone's own switches: the app's settings window and Mac front ends show them (docs/frontends.md)
     settings = work / 'app/launcher.json'; settings.parent.mkdir(parents=True, exist_ok=True)
     run([py, repo / 'dm/games/settings.py', g.id, patched, game / 'control.nacp', settings], logs / 'mac_settings.log', env=dict(env, GFXAPI=gfx, SETTINGS_PLATFORM='mac', DM_LANG=lang))
     cmd = [py, repo / 'dm/mac/pack_app.py', out, '--host', host, '--patched', patched, '--romfs', rfs.source(game), '--msl', lib, '--tables', g.table('shader_map.tsv').parent,
