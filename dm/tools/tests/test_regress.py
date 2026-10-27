@@ -65,8 +65,20 @@ class Regress(unittest.TestCase):
     def test_routes(self):   # every profile's smoke.tsv reads
         for f in (REPO / 'dm/games').glob('*/smoke.tsv'):
             r = regress.read_route(f)
-            self.assertTrue(r['secs'] > 0 and r['quick'] > 0 and r['keys'], f)
+            self.assertTrue(r['secs'] > 0 and r['quick'] > 0, f)
+            self.assertIsInstance(r['keys'], str, f)   # title-screen routes need no input
             if r['reach']: self.assertTrue(r['reach'][1] <= r['secs'], f)
+
+    def test_route_keys_are_optional_and_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / 'smoke.tsv'
+            for row, keys in (('', ''), ('keys\t\n', ''), ('keys\t1:A,2:B\n', '1:A,2:B')):
+                with self.subTest(row=row):
+                    f.write_text('save\tnew\nsecs\t40\nquick\t35\nreach\t1200@30\n' + row)
+                    r = regress.read_route(f)
+                    self.assertEqual(r['keys'], keys)
+                    self.assertEqual(r['save'], 'new')
+                    self.assertEqual(r['reach'], (1200, 30.0))
 
     def test_chain_diff(self):
         b = {'shaders': {'a': {'st': 'ok', 'msl': '1'}, 'b': {'st': 'ok', 'msl': '2'}, 'c': {'st': 'metal failed'}, 'd': {'st': 'ok', 'msl': '4'}},
