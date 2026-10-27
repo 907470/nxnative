@@ -11,8 +11,8 @@
 #        python3 scripts/regress.py list                                                                       (the games found, their routes and stored baselines)
 #   REV: any git revision of this repository; worktree = this checkout as it is, uncommitted and untracked files included. check: baseline = the merge base of HEAD and main,
 #   candidate = worktree; baseline: --rev main. Each revision is checked out once into <root>/trees/<id> (git worktree), and the chain, host and rewriter come from there.
-#   --root (REGRESS_ROOT; no default, the harness stops without it): source trees and public reports; game-derived files stay in <NSP folder>/<id>-work/regress/.
-#   --games-dir (REGRESS_GAMES; no default, the harness stops without it): the NSP folders "<name> [<title ID>]", each with the
+#   --root (REGRESS_ROOT; no default, required except for impact): source trees and public reports; game-derived files stay in <NSP folder>/<id>-work/regress/.
+#   --games-dir (REGRESS_GAMES; no default, required except for impact): the NSP folders "<name> [<title ID>]", each with the
 #   <id>_build of scripts/build_ipa_from_nsp.py --platform mac. A game takes part when it has that build and, for the runs, a route dm/games/<id>/smoke.tsv (read from this checkout).
 #   REGRESS_SKIP=ID,...: games left out unless --games names them (a game another agent works on).
 #   --lock FILE (DM_MEASURE_LOCK): the measuring lock bench.py --lock shares, held only while a game runs.
@@ -1086,7 +1086,7 @@ def cmd_impact(a):
     L += ['', '### Why', ''] + [f'- `{p}` ← {w}' for p, w in r['patterns']] + [f'- `{k}:{n}` ← {w}' for k, n, w in r['names'][:30]] + (['- … more entry points'] if len(r['names']) > 30 else [])
     if r['unmapped']: L += ['', 'Changed files no rule maps (add them to dm/tools/impact_map.tsv): ' + ', '.join(f'`{f}`' for f in r['unmapped'])]
     md = '\n'.join(L) + '\n'
-    out = Path(a.out) if a.out else ROOT / 'reports' / f'{datetime.datetime.now():%Y%m%d-%H%M%S}-impact' if ROOT.is_dir() else None   # without a harness root, the report is only printed
+    out = Path(a.out) if a.out else ROOT / 'reports' / f'{datetime.datetime.now():%Y%m%d-%H%M%S}-impact' if a.root and ROOT.is_dir() else None   # without a harness root, the report is only printed
     if out:
         out.mkdir(parents=True, exist_ok=True)
         (out / 'impact.json').write_text(json.dumps({'schema': 'nxnative-impact/1', 'range': rng, **r}, indent=1, default=list)); (out / 'impact.md').write_text(md)
@@ -1213,7 +1213,7 @@ def main():
     sub.add_parser('list', help='the games, routes and baselines')
     a = ap.parse_args()
     missing = [o for o, v in (('--root (REGRESS_ROOT)', a.root), ('--games-dir (REGRESS_GAMES)', a.games_dir)) if not v]
-    if missing: ap.error(f'set {" and ".join(missing)}: where the harness keeps its trees and reports, and the folder of the games\' NSP folders, for example '
+    if missing and a.cmd != 'impact': ap.error(f'set {" and ".join(missing)}: where the harness keeps its trees and reports, and the folder of the games\' NSP folders, for example '
                          f'regress.py --root <drive>/harness --games-dir <drive>/nsp {a.cmd} ... (the options go before the command)')
     ROOT, GAMES = Path(a.root), Path(a.games_dir)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))   # a stop runs the finally blocks: a game or a shader build in its own process group is stopped too

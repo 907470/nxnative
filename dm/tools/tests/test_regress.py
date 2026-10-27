@@ -50,6 +50,41 @@ fragment main0_out main0(main0_in in [[stage_in]], constant spvDescriptorSetBuff
 
 
 class Regress(unittest.TestCase):
+    def test_impact_without_machine_paths(self):
+        env = {k: v for k, v in regress.os.environ.items() if k not in ('REGRESS_ROOT', 'REGRESS_GAMES')}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            command = [regress.sys.executable, REPO / 'scripts/regress.py']
+            result = regress.sh([*command, 'impact', 'HEAD..HEAD'], cwd=root, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('## regress.py impact', result.stdout)
+            self.assertEqual(list(root.iterdir()), [])   # an unset root must not become cwd/reports
+            out = root / 'explicit'
+            result = regress.sh([*command, 'impact', 'HEAD..HEAD', '--out', out], cwd=root, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads((out / 'impact.json').read_text())['schema'], 'nxnative-impact/1')
+            self.assertTrue((out / 'impact.md').is_file())
+            harness = root / 'harness'; harness.mkdir()
+            result = regress.sh([*command, '--root', harness, 'impact', 'HEAD..HEAD'], cwd=root, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(list((harness / 'reports').glob('*/impact.json'))), 1)
+
+    def test_game_commands_require_machine_paths(self):
+        env = dict(regress.os.environ, REGRESS_ROOT='', REGRESS_GAMES='')
+        with tempfile.TemporaryDirectory() as td:
+            command = [regress.sys.executable, REPO / 'scripts/regress.py']
+            for cmd in ('baseline', 'check', 'chain', 'usage', 'list'):
+                with self.subTest(cmd=cmd):
+                    result = regress.sh([*command, cmd], cwd=td, env=env)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('set --root (REGRESS_ROOT) and --games-dir (REGRESS_GAMES)', result.stderr)
+            for option, missing in (('--root', '--games-dir (REGRESS_GAMES)'), ('--games-dir', '--root (REGRESS_ROOT)')):
+                with self.subTest(option=option):
+                    result = regress.sh([*command, option, td, 'check'], cwd=td, env=env)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('set ' + missing + ':', result.stderr)
+            self.assertEqual(list(Path(td).iterdir()), [])
+
     def test_interface(self):
         vo, fi = regress.msl_io(VS, 'main0_z', 'vs'), regress.msl_io(PS, 'main0', 'ps')
         self.assertEqual(vo, {'locn0': 'float4', 'locn2': 'float4'})
