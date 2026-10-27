@@ -52,6 +52,7 @@ No `patches.py`. `op_mode` stays docked: Odyssey only takes its motion moves in 
 - A fresh save wakes Mario in the Cap Kingdom with `DM_KEYS="f1000:A,f8200:RLeft~6,f9200:LUp~4"`: the "Look Around" hint waits for the right stick held about 6 s one way (left then right cancels out). Play starts at about frame 9,900, and the game saves there.
 - From that save, `f1000:A,f1300:A` resumes into play at about frame 1,500, and `f1600:LUp~7` walks straight across the fog to the hills by the bridge, where Cappy flees from Mario.
 - `DM_KEYS` takes `RLeft` / `RUp` / `RRight` / `RDown` for the right stick and `Shake` for the controller.
+- `smoke.tsv` (for `scripts/regress.py`) starts from a save made at the ship's "Look Around" hint, kept as `saves/look_around` in the NSP folder: `f1000:A,f1300:A` resume there, and Mario stands on the deck from about 40 s.
 
 ## Found on this game
 
