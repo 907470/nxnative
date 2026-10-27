@@ -17,6 +17,10 @@ build	v0	1.0.0	main=ca44e7dd62e61a2a4e8889b3319ae173	sdk=3644a6760469451cabc99f0
 package	v0
 shader_versions	v0
 
+# The game calls nvnDeviceSetDepthMode(near=0); prepare the same main0_z bases
+# offline so the first run can use them instead of repeating the full prebuild.
+depth_mode	zero
+
 # ---- Files ----
 # subsdk0 is NintendoSDK_movie; the host supplies its imported entry points.
 modules	main sdk

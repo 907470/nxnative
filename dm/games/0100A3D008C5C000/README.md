@@ -56,6 +56,17 @@ input described [below](#files-and-builds). Full 4.0.0 shader coverage and an
 update IPA have not been produced. Its partial startup used the base shader
 libraries and reported missing update shader keys.
 
+### Pipeline preparation depth
+
+**Current:** the game calls `nvnDeviceSetDepthMode` with near = 0 and uses
+`main0_z` vertex entries. The profile's `depth_mode zero` makes the offline
+prebuild prepare those same bases. The first full regression exposed the
+missing setting: its tool prebuild compiled 24,481 bases for near = -w with
+zero failures, then the game opened those archives but rebuilt the pairs for
+near = 0 before presenting a frame, missing the route's deadline. The corrected
+profile is being validated; the shader input digest is unchanged. This is the
+existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.md#depth-mode-near--0-needs-the-per-mode-entry-points).
+
 ## Mac routes and validation
 
 - A fresh save reaches the bedroom with `DM_KBD=Taylor` and
