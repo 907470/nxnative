@@ -46,7 +46,7 @@ supplied version. The supplied 4.0.0 update is damaged and remains unsupported
 The base game's Trinity packs and `main` contain 30,142 unique shaders:
 14,999 vertex, 15,057 pixel and 86 compute, with 24,487 variation pairs.
 There are 40 shaders embedded in `main`. The existing Trinity reader and the
-game's own Oodle decoder extract them. Chain `7fbca6dd477d`, profile inputs
+game's own Oodle decoder extract them. Chain `157e1b96c8da`, profile inputs
 `6b273274b0eb`: all 30,142 compile for Mac and iPhone, with no undecoded
 bindings. The complete build supplies the stamped `c1_full.tsv` and
 `cb_extent.tsv`; no shader override is needed.
@@ -58,13 +58,15 @@ libraries and reported missing update shader keys.
 
 ### Pipeline preparation depth
 
-**Current:** the game calls `nvnDeviceSetDepthMode` with near = 0 and uses
+**Resolved:** the game calls `nvnDeviceSetDepthMode` with near = 0 and uses
 `main0_z` vertex entries. The profile's `depth_mode zero` makes the offline
 prebuild prepare those same bases. The first full regression exposed the
 missing setting: its tool prebuild compiled 24,481 bases for near = -w with
 zero failures, then the game opened those archives but rebuilt the pairs for
 near = 0 before presenting a frame, missing the route's deadline. The corrected
-profile is being validated; the shader input digest is unchanged. This is the
+profile then passes the unchanged 180-second route: first frame in 1.9 seconds,
+frame 5,324, 29.9 fps, p50/p99 33.28/38.54 ms and no dropped frames under Metal
+API validation. The shader input digest is unchanged. This is the
 existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.md#depth-mode-near--0-needs-the-per-mode-entry-points).
 
 ## Mac routes and validation
@@ -81,7 +83,8 @@ existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.
 - [`smoke.tsv`](smoke.tsv) uses an isolated, fixed copy of the save just after
   getting up at `<NSP folder>/0100A3D008C5C000-work/smoke-save`. Make that
   copy before running the regression harness; the save stays outside the repo.
-- **Validated 2026-10-27:** the complete Mac shaders render the character,
+- **Initial gameplay validation, 2026-10-27, chain `7fbca6dd477d`:**
+  the complete Mac shaders render the character,
   academy, movie and bedroom. A fresh 10-minute run and a 20-minute reload
   run under Metal API validation reached gameplay without a GPU fault,
   missing shader or validation error. The reload exercised walking, camera
@@ -92,16 +95,18 @@ existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.
   In the stationary bedroom, frame times stay around 33.3 ms (30 fps),
   resident memory settles around 3.0 GB and GPU allocations around 1.37 GB;
   this is an indoor smoke observation, not an outdoor benchmark.
-- **Build and checks:** the unsigned IPA compiles, contains all 30,142 primary
-  iOS shader libraries and the expected main/SDK cuts, and passes all ZIP CRC
-  checks. The Python suite passes 292 tests (7 skipped); the Metal graphics
-  tests pass. Static regression checks against `d3bbb3a6e51d` pass for
-  Raging Loop, Final Fantasy Tactics, Sea of Stars, NieR:Automata, Super Mario
-  Galaxy 2 and Breath of the Wild (30,482 entries total), with no new shader
-  failures or changed outputs. Portal's baseline hits a local package/profile
-  mismatch; the harness does not support Balatro's OpenGL inputs. Six larger
-  local titles and other games' runtime routes remain unchecked. Reports and
-  the coverage audit are under this game's work folder, `regress-isolated/`.
+- **Release route, chain `157e1b96c8da`:** all 30,142 Mac shaders compile;
+  the full bedroom route passes under Metal API validation with the numbers
+  [above](#pipeline-preparation-depth). Its two stationary screenshots show
+  the character, room and bag-and-hat dialogue. The sole red diagnostic is
+  conservative raster dilation. A preceding run had repeated display-link
+  stalls and missed the frame gate; the unchanged repeat passed. The cause
+  of that run's display-link stalls was not isolated.
+- **Build and checks:** the unsigned IPA contains 30,142 primary iOS shader
+  libraries (41,025 including variants) and the expected main/SDK cuts.
+  Release checks and coverage are recorded in
+  [PR #378](https://github.com/seedds/nxnative/pull/378); detailed local logs
+  stay in `<NSP folder>/0100A3D008C5C000-work/release-1.0.0/`.
 
 ## Pipeline cache ownership
 
@@ -115,10 +120,11 @@ existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.
 - **Resolved: compiler-cache ownership defect.** The investigation reproduces
   deletion of a foreign `PersistentState` in both an isolated fixture and
   the real-Metal archive test. The latter fails before the shared fix and
-  passes 78 checks afterward. See [Metal's build folders](../../../docs/reference/shaders.md#metals-build-folders-left-by-pipeline-archive-flushes)
+  passes 73 checks plus separate-process compaction/restart checks afterward.
+  See [Metal's build folders](../../../docs/reference/shaders.md#metals-build-folders-left-by-pipeline-archive-flushes)
   for the mechanism and fix; these tests do not identify the original run's
   deleting process.
-  The rebuilt host's final 450-second replay (frame 13,200) reaches Mom's kitchen dialogue
+  The initial chain's rebuilt host's 450-second replay (frame 13,200) reaches Mom's kitchen dialogue
   and commits two saves under Metal API validation, with no missing-cache
   or pipeline-creation error; conservative raster dilation remains the
   sole red diagnostic. It ends at the harness's intentional deadline.
