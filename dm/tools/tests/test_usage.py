@@ -37,11 +37,11 @@ class Usage(unittest.TestCase):
             (Path(d) / 'dm/gfx/nvn/f.h').write_text('static inline int step(int k) {\n    return k + 1;\n}\nstatic inline int hold(int k) {\n    return k;\n}\n')
             (Path(d) / 'dm/gfx/nvn/hle_nvn.c').write_text('#include "f.h"\nNVN(nvnQueuePresentTexture, void, int k) {\n}\n')   # a pure deletion inside the entry point
             run('commit', '-qam', '2')
-            ch = usage.changed_functions('HEAD^..HEAD', root=d)
+            ch = usage.changed_functions('HEAD^..HEAD', root=Path(d))
             self.assertEqual(ch['dm/gfx/nvn/f.h'], {'step', 'hold'}); self.assertEqual(ch['dm/gfx/nvn/hle_nvn.c'], {'nvnQueuePresentTexture'})
-            callers, roots, _ = usage.host_graph(d, rev='HEAD^')   # read from git: the step call exists only in the first revision
+            callers, roots, _ = usage.host_graph(Path(d), rev='HEAD^')   # read from git: the step call exists only in the first revision
             self.assertEqual(usage.reach({('dm/gfx/nvn/f.h', 'step')}, callers, roots)[0], {('nvn', 'nvnQueuePresentTexture')})
-            self.assertEqual(usage.reach({('dm/gfx/nvn/f.h', 'step')}, *usage.host_graph(d)[:2])[0], set())
+            self.assertEqual(usage.reach({('dm/gfx/nvn/f.h', 'step')}, *usage.host_graph(Path(d))[:2])[0], set())
 
     def test_rule_precedence(self):
         rules = usage.load_map()
