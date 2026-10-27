@@ -4,7 +4,7 @@ Base game 1.0.0 (v0), SDK 13.3.5, Game Freak's Trinity engine on NVN.
 Playable on the Mac: language and character selection, the academy opening,
 the native Bink movie, getting up in the bedroom, walking downstairs and
 through the living room and kitchen, camera control, dialogue and save/reload.
-The unsigned 1.0.0 IPA is built (~7.2 GB); iPhone testing is pending.
+The unsigned 1.0.0 IPA is built (~7.0 GB); iPhone testing is pending.
 Only 1.0.0 is registered, and the profile's shader tables come from v0.
 When the NSP folder also contains updates, build the supported version with
 `scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys> -p v0` (add
@@ -97,16 +97,35 @@ existing [per-depth-mode entry-point mechanism](../../../docs/reference/shaders.
   this is an indoor smoke observation, not an outdoor benchmark.
 - **Release route, chain `157e1b96c8da`:** all 30,142 Mac shaders compile;
   the full bedroom route passes under Metal API validation with the numbers
-  [above](#pipeline-preparation-depth). Its two stationary screenshots show
+  [above](#pipeline-preparation-depth). The repeat using current main's RomFS
+  image mount also passes: first frame in 1.6 seconds, frame 5,345, 29.9 fps,
+  p50/p99 33.26/39.02 ms, peak footprint 4,329 MB and no dropped frames.
+  [`usage.tsv`](usage.tsv) combines this full run with the shader features.
+  Its two stationary screenshots show
   the character, room and bag-and-hat dialogue. The sole red diagnostic is
   conservative raster dilation. A preceding run had repeated display-link
   stalls and missed the frame gate; the unchanged repeat passed. The cause
   of that run's display-link stalls was not isolated.
 - **Build and checks:** the unsigned IPA contains 30,142 primary iOS shader
-  libraries (41,025 including variants) and the expected main/SDK cuts.
-  Release checks and coverage are recorded in
-  [PR #378](https://github.com/seedds/nxnative/pull/378); detailed local logs
-  stay in `<NSP folder>/0100A3D008C5C000-work/release-1.0.0/`.
+  libraries (41,025 including variants), a 6,678,553,818-byte RomFS image and
+  the expected main/SDK cuts. All ZIP CRCs pass. The Python suite passes
+  449 tests (3 skipped), as do the host and full Metal graphics suites;
+  pinned lint/types report no new findings.
+  The final comparison of `75065df74762` against `7b00b952abc1` covers
+  14 available local builds: 13 pass, with 192,870 shader records, unchanged
+  MSL and no new shader or interface failures. ANIMAL WELL's full runtime
+  comparison holds 59.9 fps, with screenshots and frame times within the
+  harness tolerances.
+  Balatro is an unsupported OpenGL `ERROR`, so the whole report is not
+  labelled PASS. BotW's static checks pass; its unavailable fixed Zora save
+  was explicitly skipped for runtime. Final Fantasy Tactics passed the
+  earlier static comparison (`78cb26d91373` against `987759c2a218`), but its
+  local build is no longer available for the final sweep. Detailed logs and
+  the exact coverage record stay in
+  `<NSP folder>/0100A3D008C5C000-work/release-1.0.0/`; the final report is
+  `reports/full-final-2/report.md` there. All four pre-push CI jobs pass on
+  the tested production source; subsequent changes only record these
+  results and the usage manifest.
 
 ## Pipeline cache ownership
 
