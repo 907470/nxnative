@@ -1881,7 +1881,25 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
-def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA'):
+def report_fix_coverage(patched, mods, reg):
+    """What the modules of builds the profile does not register kept of their registered builds' cuts: the rewriter's <module>.match.tsv (patch_nso.py) lists the cuts of those
+    builds and each function patch's result; a patch not applied, or registered cuts with no function patch at all, is a red line (the game may stop where they were needed)"""
+    for m in mods:
+        try: rows = [l.split('\t') for l in (patched / f'{m}.match.tsv').read_text().splitlines() if l and not l.startswith('#')]
+        except OSError: continue
+        known = [r[1:] for r in rows if r[0] == 'registered' and len(r) == 4]
+        tried = [r[1:] for r in rows if r[0] == 'patch' and len(r) == 4]
+        lost = '; '.join(f'{disp} ({bid[:8]}…) has {n} cuts' for bid, disp, n in known)
+        if not tried:
+            if known: say(f'[RED] {m}: no function patch carries the registered builds\' fixes to this build ({lost}), and the game may stop where they were needed; see {reg.dir / "README.md"}')
+            continue
+        missing = [(name, why) for name, offs, why in tried if offs == '-']
+        if missing: say(f'[RED] {m}: function patches not applied, and the game may stop where they were needed: ' + '; '.join(f'{name!r} ({why})' for name, why in missing)
+                        + (f' (registered: {lost})' if lost else ''))
+        if len(missing) < len(tried): say(f'{m}: function patches applied: ' + ', '.join(repr(name) for name, offs, _ in tried if offs != '-'))
+
+
+def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA', patched=None):
     """Keep build-specific warnings visible for the IPA, the Xcode project and a Mac-only build"""
     disp = g.builds()[pkg_ver]['display'] if derived else ''
     if derived:   # unknown builds do not inherit fixed addresses; opt-in function matches are reported by the rewriter
@@ -1895,6 +1913,7 @@ def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA')
         else: say(f'[RED] this {artifact} uses {pkg_ver} ({disp}), which game profile {reg.id} was not brought up on ({registered_builds}): '
             'its settings, with this version\'s own shaders' + (f'; {", ".join(other)} {"is a build" if len(other) == 1 else "are builds"} the profile does not register, so the fixes made for '
             'the registered builds\' fixed addresses do not apply there; opt-in function patches apply only on a verified code match (see rewrite logs), and the game may not run as well' if other else '; every module is a registered build'))
+        if other and patched: report_fix_coverage(patched, other, reg)
     if provisional:
         say(f'[RED] this {artifact} was built from a provisional game profile and the game may not boot: {g.dir}')
         say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/agents')
@@ -2114,7 +2133,7 @@ def main(args=None):
         rmtree(work / 'tmp')
         say(f'done: {out_ipa} ({tree_size(out_ipa)[1] / 2**30:.1f} GB); '
             f'open it from Finder. Its save is in ~/Library/Application Support/nxnative/{app:016X}/, its log in ~/Library/Logs/nxnative/{app:016X}.log')
-        report_profile_status(g, reg, pkg_ver, derived, provisional, 'Mac app')
+        report_profile_status(g, reg, pkg_ver, derived, provisional, 'Mac app', patched)
         return
     if mac:   # a Mac-only build ends with the Mac host and the command that runs the game
         host, font = mac_host(py, repo, work, env, logs, g)
@@ -2122,7 +2141,7 @@ def main(args=None):
         rmtree(work / 'tmp')
         say(f'done: the game runs on the Mac with this command (its save in {work / "run/save"}, kept from run to run; DM_WINDOW=1 opens a window, DM_AUDIO=1 plays sound):')
         PROG.say(cmd)
-        report_profile_status(g, reg, pkg_ver, derived, provisional, 'Mac build')
+        report_profile_status(g, reg, pkg_ver, derived, provisional, 'Mac build', patched)
         return
 
     if not prepare_xcode and free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')
@@ -2152,7 +2171,7 @@ def main(args=None):
         say(f'game project: {project}')
         say(f'Xcode derived data: {work / "xcode-derived-data"}')
         say('choose the game scheme in Xcode, select your Team and iPhone or iPad, then Run (Release)')
-        report_profile_status(g, reg, pkg_ver, derived, provisional, 'Xcode project')
+        report_profile_status(g, reg, pkg_ver, derived, provisional, 'Xcode project', patched)
         return
     watch = IpaWatch(repo, work / 'ipa', out_ipa)
     PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"
@@ -2163,7 +2182,7 @@ def main(args=None):
     if not keep:
         say(f'deleting the extracted game files: {ex}'); rmtree(ex)
     say(f'done: {out_ipa} ({out_ipa.stat().st_size / 2**30:.1f} GB)')
-    report_profile_status(g, reg, pkg_ver, derived, provisional)
+    report_profile_status(g, reg, pkg_ver, derived, provisional, patched=patched)
 
 
 def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted
