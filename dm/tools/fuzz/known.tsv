@@ -1,14 +1,3 @@
 # Open findings of the fuzz harnesses (dm/tools/fuzz/fuzzlib.py), one row per cause: harness, signature pattern (fnmatch, alternatives separated by |), its inputs in corpus/<harness>/ (comma-separated), issue, what
 nacp	struct.error@nacp.py:name	empty.bin	#454	name() reads the u16 size of a compressed title area from a file shorter than 2 bytes
 romfs	struct.error@romfs.py:__init__	magic-only.img	#454	Image() unpacks the 32-byte header from an image cut short after its magic
-shader_split	*@shader_split.py:*mshd_shaders*	mshd-empty-code.bin	#452	mshd_shaders hands a code area shorter than its 0x34-byte header to sph_stage
-shader_split	*@shader_split.py:*bnsh_shaders*	bnsh-far-pointer.bin	#452	bnsh_shaders follows the variation table pointer (u64 at +0x80) unchecked; one past the C index range raises OverflowError
-shader_split	*@shader_split.py:*yaz0	yaz0-cut.bin	#452	yaz0 decodes until the size in its header without checking the input end: a Yaz0 stream cut short raises IndexError
-shader_split	*@shader_split.py:*sdf_shaders*	sdf-far-offset.bin	#452	sdf_shaders follows an entry's stage offsets and lengths unchecked: one past the end raises struct.error instead of a red line
-shader_split	*@shader_split.py:*sarc_members	sarc-cut.bin	#452	sarc_members reads the SARC and SFAT headers and the entry table unchecked: a SARC cut short raises struct.error
-shader_split	*@shader_split.py:*glslc_shaders	glslc-cut.bin	#452	glslc_shaders reads control +0x20 and +0x704 of a control section found inside the output without checking that the section is there: an output cut inside it raises struct.error
-shader_split	*@shader_split.py:*arh_entries	arh1-nonascii.bin	#452	arh_entries checks that the path prefix from the trie is ASCII but decodes the suffix from the string table unchecked: a non-ASCII byte raises UnicodeDecodeError instead of a red line
-shader_split	*@shader_split.py:*tfxo_shaders	tfxo-cut.bin	#452	tfxo_shaders reads control +0x704 of a control section that ends early: a .tfxo file cut inside a control section raises struct.error instead of a red line
-shader_split	struct.error@shader_split.py:*scan_blob	bnsh-at-end.bin	#452	scan_blob reads the size of every 'BNSH\\0\\0\\0\\0' match at +0x1c without checking that the header is there: the magic within 0x20 bytes of the end of any scanned file raises struct.error and the file's other shaders are left out
-shader_split	RecursionError@shader_split.py:scan_blob>scan_blob	sarc-self.bin	#452	scan_blob expands SARC members without checking that a member lies inside the archive and is smaller than it: a member that spans the whole SARC is scanned as itself until RecursionError, copying the archive at each of ~1000 levels (a 50 MB archive: ~50 GB)
-shader_split	*@shader_split.py:*bahs_*	bahs-cut.bin	#452	bahs_shaders reads the code region fields at +0x18 / +0x1c without checking the header is there: a BAHS file shorter than 0x20 bytes raises struct.error
