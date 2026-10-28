@@ -123,6 +123,9 @@ requests, only the checker whose pinned release version increased may gain
 baseline entries or counts. Comments, dependency updates and checker downgrades
 do not allow growth.
 
+`scripts/bug_report.py` (`-h`) collects the logs, versions and settings a bug report needs into one zip ([CONTRIBUTING.md](../CONTRIBUTING.md#reporting-a-problem)); it reads an allow-list of text files only.
+For a Mac app, it reads the name, title ID and game version from `Info.plist`, lists the chain folders in `Contents/Resources/msl`, and includes both the player's and the bundle's `env.txt`. Recorded `DMCommit` and `DMChain` values take precedence; an app without a commit stamp reports its commit as unknown. The collector's checkout and chain are labeled separately. An NSP build lists available chain folders under `shader/cache` (Mac), `shader/ios` (iOS) and `shader`; old cached folders do not identify the chain that ran. The 4 MB file limit and 20 MB bundle limit include `report.md` and truncation markers; space for the report is reserved before logs are collected. Explicit `.keys` inputs are refused.
+
 ## The packing script in detail
 
 `scripts/build_ipa_from_nsp.py` (`-h` lists every option):
