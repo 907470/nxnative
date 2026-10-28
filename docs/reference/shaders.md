@@ -134,10 +134,10 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 ### Shader records in Snowdrop SDF data slices
 
 - **Symptom:** the split finds no shaders in a RomFS made of `.sdfdata`, `.sdftoc` and `.sdfver` files.
-- **Cause:** Snowdrop stores the shaders in individually compressed records inside its `BERG` data slices. These SDF archives are a different format from RE Engine's shader definitions above. A shader record has a 20-byte header `{u32 0xabcd00c6, flags, 0, raw length, stored length}`, then one zstd frame; reflection data precedes the NVN sections inside it.
-- **Fix:** `shader_split.py` recognizes `BERG` by magic and reads the length-delimited compressed records (`snowdrop_shaders`). Every control section is followed immediately by its code, with lengths from control +0x20 and +0x704; they are byte-packed, so a control need not be aligned. A single record can hold more than one shader. Each section must pass the control / code / stage checks. Programs hold one stage, and the vertex shaders take the [single-stage cover](#single-stage-programs-paired-with-a-cover). Scanning for the record header avoids mistaking a coincidental zstd magic inside compressed data for another asset.
+- **Cause:** Snowdrop stores the shaders in individually compressed records inside its `BERG` data slices. A cache record can itself be wrapped in an SDF zstd chunk. These SDF archives are a different format from RE Engine's shader definitions above. A shader record has a 20-byte header `{u32 codec, flags, 0, raw length, stored length}`: `0xabcd00c5` precedes zlib data, `0xabcd00c6` a zstd frame; reflection data precedes the NVN sections inside it. Both supplied games use SDF version 22, so that version does not select the codec.
+- **Fix:** `shader_split.py` recognizes `BERG` by magic and reads the length-delimited compressed records (`snowdrop_shaders`). Every control section is followed immediately by its code, with lengths from control +0x20 and +0x704; they are byte-packed, so a control need not be aligned. A single record can hold more than one shader. Each section must pass the control / code / stage checks. Programs hold one stage, and the vertex shaders take the [single-stage cover](#single-stage-programs-paired-with-a-cover). The reader also peeks at each zstd frame's decoded header and finishes only frames beginning with a cache record. This finds nested records without treating a coincidental frame magic or a bare frame containing control-like bytes as a shader asset.
 - **DLC:** additional shader records ship in the DLC's data slices. The NSP script includes each extracted DLC RomFS as an extra shader root, without an ExeFS module, and fingerprints its index and extraction timestamps for split reuse. Vulkan and OpenGL builds include the DLC roots too. When installing or removing optional DLC changes an NVN shader union, the script uses an external profile with new shader tables only after every non-DLC shader row and fact matches the registered tables; package indices may change. The registered module builds, settings and build-gated cuts are preserved. A cached proof of this comparison permits repeat builds to reuse the split.
-- **Found on:** [Mario + Rabbids Sparks of Hope](../../dm/games/0100317013770000/README.md) (Snowdrop, SDF version 22).
+- **Found on:** [Mario + Rabbids Sparks of Hope](../../dm/games/0100317013770000/README.md) (zstd); [Mario + Rabbids Kingdom Battle](../../dm/games/010067300059A000/README.md) (zlib records, some wrapped in zstd chunks; shorter control sections and headerless compute code).
 
 ### SPK shader package in an MT Framework ARC
 
@@ -726,6 +726,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Check:** `dm/tools/tests/test_image_atomic_bounds.py`. Portable tests check the MSL version choice and the rejection of the pointer form. With `DMSH_TEST_XLATE` set to a rebuilt translator (and `spirv-val` on `PATH`; spirv-cross is the in-repo build) the synthetic shaders are translated, the guard's dataflow is checked in the SPIR-V (the size query and comparison dominate the atomic, the phi carries zero on the invalid edge), and the MSL is produced; `DMSH_TEST_METAL=1` compiles and links it (`DMSH_TEST_METAL_SDKS=macosx,iphoneos` for both SDKs) and `DMSH_TEST_GPU=1` runs the returning fixtures (above). Changing this path changes the chain version: rebuild the translator and update the lock before building shaders.
 
 ## Shaders compiled at run time
+
+### A GLSL language preamble is not a complete shader
+
+- **Symptom:** the NSP script stops with `captured only 0 run-time shaders` although the game reaches its frame loop with precompiled shaders.
+- **Cause:** the detection counted every `#version` occurrence. Snowdrop carries a GLSL header containing extensions and type macros, without an entry point; importing `glslcCompile` alongside it does not establish a boot shader compilation.
+- **Fix:** `profile_guess.py` counts embedded source strings containing both `#version` and `void main(...)` before their terminating NUL. The survey, build and split share that detector. Three Houses still has its nine complete boot sources; NRO imports retain their separate capture rule.
+- **Found on:** [Mario + Rabbids Kingdom Battle](../../dm/games/010067300059A000/README.md), whose only `#version` string is the 646-byte language preamble also carried by Sparks of Hope.
 
 ### Built-in shaders compiled with the game's own GLSLC
 
