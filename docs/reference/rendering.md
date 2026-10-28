@@ -719,6 +719,13 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** before the next frame's first encoder, `gp_periodic_finish` snapshots the sampled frame's labels and registers a shared-event notification at its last committed fence. The report resolves the heap after all of that frame's segments complete, without a GPU wait or an extra command buffer. The heap cannot be reused while the report is pending.
 - **Found on:** review of the measurement tools for [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md); reproduced with synthetic counters and completion events, without game execution. `t_gpuprof` checks consecutive and sparse frame selection, completion ordering and heap ownership; it runs in CPU CI.
 
+### GPU profiles stamp only the encoder they began
+
+- **Symptom:** with `DM_NVN_GPUPROF`, the host aborts minutes in on `-[AGXG16XFamilyComputeContext_mtlnext writeTimestampWithGranularity:afterStage:intoHeap:atIndex:]: unrecognized selector`, `up_flush` on the stack; or a profiled render pass with a wrong GPU time.
+- **Cause:** every encoder end goes through `m4_end`, which called `gp_end` for any encoder, including the upload, diagnostics and present encoders, which are not profiled. `gp_end` closed whichever main-command-buffer encoder `gp_begin` had last opened and sent its end stamp to the encoder it was given. An upload flush inside a profiled draw pass sent the render encoder's timestamp selector to the upload compute encoder (the abort); where the kinds matched, the pass lost its own end stamp.
+- **Fix:** `gp_begin` records the encoder it stamped, and `gp_end` ignores any other encoder, so the open pass keeps its label until its own end.
+- **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) with `DM_NVN_GPUPROF=every:300` on the Mac (issue #531; one run in four, about frame 23,000). `t_gpuprof` ends an upload encoder inside a profiled pass; it runs in CPU CI. Not rerun in the game.
+
 ## Conditional rendering and queries
 
 ### Conditional rendering evaluated at replay
