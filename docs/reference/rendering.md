@@ -378,6 +378,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [The Legend of Zelda: Breath of the Wild — upscaling and measurements](../../dm/games/01007EF00011E000/README.md#upscaling-current).
 - **Limit:** the scaler takes the presented frame, including any filtering and HUD drawing the game already performed. Feeding it an earlier scene target would mean replacing a draw of the game's own, and nothing general identifies which draw is a plain upscale. Scaler support is checked at runtime; unsupported devices, sizes and formats use standard scaling.
 
+### The NVN present crops by the vi layer crop
+
+- **Symptom:** in handheld mode the picture fills only two thirds of the screen's width and height, in the bottom-left corner (the top-left with the upper-left origin), the rest black.
+- **Cause:** the game keeps its 1920x1080 window textures in handheld mode, draws 1280x720 into them and crops through `vi::SetLayerCrop`, never `nvnWindowSetCrop`. The host recorded the layer crop (`hle_vi.c`) only for the Vulkan present ([Swapchain pre-transform and layer crop](#swapchain-pre-transform-and-layer-crop)); the NVN present read only the window's crop and showed the whole texture.
+- **Fix:** the NVN present shows the window's own crop when the game set one, else the vi layer crop (`present_crop` in `hle_nvn.c`); on the Switch both become the crop of the buffer queued to the layer. A layer crop that does not fit the window texture is reported once in red and the whole texture is shown, as before.
+- **Check:** `t_present_crop`: the window's crop wins, the layer crop is used without one, one larger than the texture is ignored, and a real `nvnQueuePresentTexture` queues the layer crop (that check fails with the old call). On an iPhone 15 Pro in handheld mode Link's Awakening's picture fills the screen's height.
+- **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md#rendering) (1.1.0, handheld mode on the iPhone).
+
 ## Blend, depth and stencil
 
 ### No writes to colour outputs the shader does not write
