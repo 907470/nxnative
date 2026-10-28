@@ -234,6 +234,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Pairing:** a pass names its vertex and pixel shader by index, 255 for none, and 10 of the 13 effects have no vertex shader: SpriteBatch binds its own and the effect's pass only replaces the pixel shader. Vertex and pixel shaders therefore combine across effects, and they are paired as single-stage programs.
 - **Found on:** [Celeste](../../dm/games/01002B30028F6000/README.md) (MonoGame for the Switch, its C# compiled to C++ by Sickhead's BRUTE): 26 shaders (20 pixel, 6 vertex), all with Mario's binding layout; every binding decodes. [Stardew Valley](../../dm/games/0100E65002BB8000/README.md) (compressed XNB).
 
+### MGFX version 5 effects (MonoGame 3.0)
+
+- **Symptom:** the NSP script's split stops with `[RED] 24 file(s) could not be read`, each `an XNB effect without an MGFX version 8 effect of NVN shaders`.
+- **Cause:** MonoGame 3.0's EffectReader (`MonoGame.Framework, Version=3.0.0.0` in the XNB) writes MGFX version 5: `MGFX`, u8 version, u8 profile and no effect key; constant buffers without names (i16 size, u8 count, {u8 parameter, u16 offset}); each shader's bytecode is a whole GLSLC output of one stage (magic 0x19866891, its +0x44 length equal to the shader's), not a control section and a code area; and the shaders are in MonoGame's DirectX layout: samplers without names and no attribute list. The parameters and techniques are version 8's. The length in front of `MGFX` in the XNB runs about 0xff0 bytes past the effect, all zeros.
+- **Fix:** `mgfx_effect` reads version 5 too, taking each shader through `glslc_shaders`; an XNB effect may end in zeros. The 7 `.dx11.mgfxo` files in `Resources` (MonoGame's stock effects) are version 5 as well: 5 hold GLSLC outputs and are read the same way, `EnvironmentMapEffect` and `SkinnedEffect` hold only DirectX bytecode and give no shader.
+- **Found on:** [Bastion](../../dm/games/010038600B27E000/README.md): 72 shaders, 24 pixel shaders in `Content/Effects` (no vertex shader: SpriteBatch's own pairs with them) and 48 in `Resources`.
+
 ### Unity 2020.3 Shader objects in UnityFS bundles
 
 - **How it is stored:** Unity 2020.3 keeps each shader's compiled programs in its `Shader` object (class 48), in UnityFS bundles (`StreamingAssets/aa`) and in the player's own serialized files (`data.unity3d`, `Resources/unity default resources`).
