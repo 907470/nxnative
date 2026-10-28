@@ -33,7 +33,7 @@ Every piece of code that runs for one game and not the others: the rewriter's pa
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | yes |
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 5 | 0 | 0 | yes |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | yes |
-| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 11 | 0 | 1 | yes |
+| [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 11 | 0 | 0 | yes |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | yes |
 
 ## Games
@@ -507,7 +507,6 @@ Every piece of code that runs for one game and not the others: the rewriter's pa
   - frame step `+0x2b33918`: movie ends
   - frame step `+0x2b36100`: movie starts: 30 fps cap
   - render scale stub (the launcher offers DM_RENDER_SCALE)
-  - host [game_profile.h:19](../../dm/host/gen/0100F2C0115B6000/game_profile.h#L19): build check
 
 ### Xenoblade Chronicles 3
 

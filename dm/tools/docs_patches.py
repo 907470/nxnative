@@ -6,7 +6,7 @@
 # FRAME_STEP function against a recording context (no game files). Run it after changing a patch file, a build-keyed host table or a profile key; --check only reports whether the page is
 # current (dm/tools/tests/test_docs.py runs it).
 # Usage: docs_patches.py [--check]
-import importlib.util, re, sys, pathlib, types
+import importlib.util, re, subprocess, sys, pathlib, types
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'dm/tools')); sys.path.insert(0, str(REPO / 'dm/games'))
@@ -14,7 +14,7 @@ import game   # noqa: E402
 
 OUT = REPO / 'docs' / 'agents' / 'game-patches.md'
 SDK = REPO / 'dm/tools/sdk_patches.py'
-HOST = [REPO / 'dm/host', REPO / 'dm/gfx', REPO / 'dm/ios']
+HOST = ['dm/host', 'dm/gfx', 'dm/ios']   # tracked files only: dm/host/gen and other build output are git-ignored
 HOST_EXT = ('.c', '.m', '.mm', '.h', '.swift')
 # What a build-keyed host table does (the table's name in the source; a row of another table is listed under its own name)
 TABLES = {'k_locks': 'engine frame limit set to fps_target', 'k_ue': "Unreal's allocator on a host malloc zone", 'k_nier_dr': 'frame interval and dynamic-resolution floor'}
@@ -29,7 +29,9 @@ def lineno(text, needle): i = text.find(needle); return text.count('\n', 0, i) +
 
 
 def load(path, n):
-    spec = importlib.util.spec_from_file_location(f'patches_doc_{n}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    spec = importlib.util.spec_from_file_location(f'patches_doc_{n}', path)
+    if spec is None or spec.loader is None: raise ImportError(f'cannot load {path}')
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
     return m
 
 
@@ -56,19 +58,19 @@ def frame_step_sites(fn):   # (offset, reason) of each site a FRAME_STEP functio
 
 def host_rows(builds):   # {build ID: [(file, line, what)]}: rows and checks of the host keyed by a main build ID
     out = {}
-    for root in HOST:
-        for p in sorted(root.rglob('*')):
-            if p.suffix not in HOST_EXT or 'tests' in p.relative_to(root).parts: continue
-            table = None
-            for n, line in enumerate(p.read_text(errors='replace').split('\n'), 1):
-                m = re.search(r'\b(k_\w+)\s*\[\]\s*=', line)
-                if m: table = m.group(1)
-                if line.lstrip().startswith('}'): table = None
-                for m in re.finditer(r'"([0-9a-f]{32})"', line):
-                    strings = re.findall(r'"([^"]*)"', line)
-                    what = TABLES.get(table, table) if table else 'build check'
-                    if table == 'k_locks' and len(strings) > 1: what = f'{what}: {strings[1]}'
-                    out.setdefault(m.group(1), []).append((p, n, what if m.group(1) in builds else f'{what} (a build no profile registers)'))
+    tracked = subprocess.run(['git', 'ls-files', *HOST], cwd=REPO, capture_output=True, text=True, check=True).stdout.split('\n')
+    for p in sorted(REPO / f for f in tracked if f):
+        if p.suffix not in HOST_EXT or 'tests' in p.relative_to(REPO).parts[2:]: continue
+        table = None
+        for n, line in enumerate(p.read_text(errors='replace').split('\n'), 1):
+            m = re.search(r'\b(k_\w+)\s*\[\]\s*=', line)
+            if m: table = m.group(1)
+            if line.lstrip().startswith('}'): table = None
+            for m in re.finditer(r'"([0-9a-f]{32})"', line):
+                strings = re.findall(r'"([^"]*)"', line)
+                what = TABLES.get(table, table) if table else 'build check'
+                if table == 'k_locks' and len(strings) > 1: what = f'{what}: {strings[1]}'
+                out.setdefault(m.group(1), []).append((p, n, what if m.group(1) in builds else f'{what} (a build no profile registers)'))
     return out
 
 
@@ -114,7 +116,7 @@ def version(builds, bid, owner=None):   # "1.4.3 main" from the build rows (of t
 
 def page():
     gs = games(); names = [g.get('name', g.id) for g in gs]; DUP.update(g.id for g in gs if names.count(g.get('name', g.id)) > 1)
-    gs.sort(key=lambda g: name(g).casefold()); by_id = {g.id: g for g in gs}; builds = build_rows(gs); host = host_rows(builds)
+    gs.sort(key=lambda g: name(g).casefold()); builds = build_rows(gs); host = host_rows(builds)
     files = {p.parent.name: p for p in sorted((REPO / 'dm/games').glob('*/patches.py'))}
     mods = {gid: load(p, n) for n, (gid, p) in enumerate(files.items())}
     sdk = load(SDK, 'sdk'); sdk_text = SDK.read_text()
