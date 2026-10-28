@@ -8770,7 +8770,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
         if (geometry_program && geometry_program->sh[2] && geometry_program->sh[2]->geo_vertices) {
             if ((dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)) || (di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i))) return;
             image_prepare(geometry_program, (1u << 0) | (1u << 2));
-            geo_draw(geometry_program, dw, di); return;
+            geo_draw(geometry_program, dw, di, 0); return;
         }
     }
     if (g_enc && g_enc_geo_nocolor != g_geo_omit_colors) rp_end();

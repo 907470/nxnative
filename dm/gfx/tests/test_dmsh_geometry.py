@@ -441,5 +441,76 @@ class MeshPassthrough(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+@unittest.skipUnless(os.environ.get('DMSH_TEST_XLATE'), 'requires the offline translator')
+class ComputeSplitPrimitiveId(unittest.TestCase):
+    def test_real_primitive_ids_survive_compute_splits(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_dmsh_reflect import REFLECT
+        root = Path(__file__).resolve().parents[3]
+        table = (root / 'dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs').read_text()
+        def instruction(name, emitter=''):
+            pattern = r'Add\("([01x]{64})",\s*InstName\.' + name + r'\s*,'
+            if emitter: pattern += r'\s*InstEmit\.' + emitter + r'\s*,'
+            return int(re.search(pattern, table)[1].replace('x', '0'), 2) | (7 << 16)
+        # Valid passthrough GS: every primitive emits with viewport mask PID+1.
+        # Feedback reads that mask and the captured vertex/instance attributes.
+        ops = [instruction('Ald') | (255 << 8) | (255 << 39) | (0x60 << 20),
+               instruction('Iadd', 'IaddI') | (1 << 20),
+               instruction('Ast') | (255 << 8) | (0x3a0 << 20), instruction('Exit') | 15]
+        with tempfile.TemporaryDirectory(prefix='compute_primitive_id_') as directory:
+            work = Path(directory); jobs = []
+            for t in range(5):
+                for inv in (1, 3):
+                    key = f'pid{t}_{inv}'; header = bytearray(0x50)
+                    struct.pack_into('<5I', header, 0, (1 << 24) | (4 << 10) | (3 << 5) | 1, 0, inv << 24, 7 << 24, 1)
+                    code = work / (key + '.bin')
+                    code.write_bytes(header + struct.pack('<8Q', 0, *ops[:3], 0, ops[3], 0, 0))
+                    jobs.append(dict(key=key, stage='gs', code=str(code), geometry_topology=t, tex={}, img={}, attr={}, fout={}, debug=True, reduced=True))
+            (work / 'jobs.json').write_text(json.dumps(jobs))
+            subprocess.run([os.environ['DMSH_TEST_XLATE'], str(work / 'jobs.json'), directory], check=True, capture_output=True)
+            sources = []
+            for job in jobs:
+                key = job['key']; spv = work / (key + '.spv'); dmsh_geometry.flatten_sets(spv)
+                result = subprocess.run([str(root / 'dm/gfx/tools/spirv_cross_bin/spirv-cross'), '--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-texture-buffer-native', str(spv)], check=True, capture_output=True, text=True)
+                source = dmsh_geometry.capture_input(dmsh_geometry.topology_pointer(result.stdout))
+                # ABI check also runs on CI hosts without a Metal device and
+                # catches a stale translator DLL that omits the primitive base.
+                self.assertTrue('(*spvDescriptorSet0.vb_info)._m1.y' in source,
+                                'translated PrimitiveID must read the base from geometry_counts.y')
+                metadata = json.loads((work / (key + '.res.json')).read_text())
+                layout = dmsh_geometry.output_layout(Path(job['code']).read_bytes(), job['geometry_topology'])
+                (work / (key + '.json')).write_text(json.dumps(dict(route='B', bindings=REFLECT(key, 'gs', source, metadata), geometry=dict(layout, stride=metadata['geometry_stride']))))
+                path = work / (key + '.metal'); path.write_text(source); sources.append(path)
+            vertex = """#include <metal_stdlib>
+using namespace metal;
+struct main0_out
+{
+    float4 m_0 [[user(locn0)]];
+    float4 gl_Position [[position]];
+};
+vertex main0_out main0(uint v [[vertex_id]], uint i [[instance_id]])
+{
+    main0_out out = {};
+    out.m_0 = as_type<float4>(uint4(v, i, v ^ i, 1));
+    out.gl_Position = float4(0, 0, 0, 1);
+    return out;
+}
+"""
+            path = work / 'vertex.metal'; path.write_text(vertex + dmsh_geometry.capture(vertex)); sources.append(path)
+            for path in sources if os.environ.get('DMSH_TEST_METAL') == '1' or os.environ.get('DMSH_TEST_GPU') == '1' else []:
+                for sdk in ('macosx', 'iphoneos'):
+                    air = path.with_suffix('.' + sdk + '.air')
+                    result = subprocess.run(['xcrun', '-sdk', sdk, 'metal', '-c', '-fmodules-cache-path=' + directory + '/modules', str(path), '-o', str(air)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr[-3000:])
+                    if sdk == 'macosx':
+                        subprocess.run(['xcrun', '-sdk', sdk, 'metallib', str(air), '-o', str(path.with_suffix('.metallib'))], check=True, capture_output=True)
+            if os.environ.get('DMSH_TEST_GPU') == '1':
+                binary = os.environ.get('DM_TEST_GEOMETRY_PRIMITIVE_ID')
+                self.assertTrue(binary, 'set DM_TEST_GEOMETRY_PRIMITIVE_ID to the native replay test')
+                result = subprocess.run([binary, directory], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                print(result.stdout.strip())
+
+
 if __name__ == '__main__':
     unittest.main()

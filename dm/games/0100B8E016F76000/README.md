@@ -24,7 +24,7 @@ The global profile's keys:
 - Reported in [PR #416](https://github.com/seedds/nxnative/pull/416), Mac (M1, 720p handheld mode): title, a new Easy game with auto-chips (name entry through `DM_KBD`), the opening flight, the ocean and the factory: 60 fps held for four minutes after the [lean geometry path](../../../docs/reference/shaders.md#passthrough-geometry-shaders-drawn-by-the-vertex-shader) (50 ms frames before it).
 - iPhone 15 Pro (player's report, handheld mode): 60 fps through most of the flight; the heaviest later scenes (1,100–2,070 draws a frame) fell to about 15 fps once the phone was thermally serious, with up to 28 ms of translation and 56 ms of GPU work a frame. The dynamic-resolution control was not yet in that build.
 
-- Current reconciliation: all 1,225 shaders and 96 mesh pairs build for Mac and iOS on chain `a85cceab7210`, with a separate Asian-profile stamp. The shader inputs match the verified global package. The Asian executable and iPhone runtime were not locally retested for this reconciliation.
+- Current reconciliation: all 1,225 shaders and 96 mesh pairs build for Mac and iOS on chain `a78f966a7b38`, with a separate Asian-profile stamp. The shader inputs match the verified global package. The Asian executable and iPhone runtime were not locally retested for this reconciliation.
 
 ## Found on this game
 

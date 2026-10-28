@@ -145,15 +145,14 @@ static void vertex_dump(NvShader *vs, const p_draw *dw, const p_draw_idx *di) {
     MLOG("vertex dump %s: first %u, count %llu, %s", vs->key, lo, (unsigned long long)span, filename);
     args_dirty_all(); g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
 }
-static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0);
+static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint32_t primitive_base);
 // A draw whose capture would need more scratch than the bound, drawn as smaller draws in the hardware's order: one instance at a time, then runs of a list topology's primitives
 // (points, lines, triangles, lines and triangles with adjacency), each with its own index range. The capture lays the vertices out by vertex number from the lowest index to the highest for
 // every instance, and the geometry shader's output takes room per primitive: OCTOPATH TRAVELER II draws 129,032 triangles of one mesh through a cube shadow map's geometry shader in its
 // first battle, which asked for more than the bound and was skipped. The index list is read once and cut into runs of at most GEO_RUN_PRIMS primitives whose index range takes at most
 // GEO_RUN_SPAN of capture; the runs skip the GPU wait their draw would take (the outer draw waited already, and nothing in between writes index or vertex data). Halving the list at every
-// level instead, each part reading its indices again and waiting for the GPU, made that one frame take 805 ms. Strips, fans and primitive restart cannot be cut that way. The draw's
-// primitive numbers restart at 0 in each run: its geometry shader (cb17a9453d4789d0, Unreal's one-pass point light shadow) reads only its index map by them, but one that read its
-// primitive ID would see other numbers than on the Switch (such draws were skipped before).
+// level instead, each part reading its indices again and waiting for the GPU, made that one frame take 805 ms. Strips, fans and primitive restart cannot be cut that way.
+// Each child retains its draw-wide primitive base; only the guest PrimitiveID adds it, while capture and output addresses remain local to that child.
 // Returns 0 when the draw cannot be split (the caller reports it)
 enum { GEO_RUN_PRIMS = 4096 }; static const uint64_t GEO_RUN_SPAN = 64ull << 20;
 static int g_geo_split_depth;   // > 0 while geo_split draws its runs: they skip the GPU wait
@@ -164,7 +163,7 @@ static int geo_sync_cpu(int *drained) {
     memset(g_vconv, 0, sizeof g_vconv); *drained = 1;
     return 1;
 }
-static int geo_split(NvProg *pr, const p_draw *dw, const p_draw_idx *di, int count, int instances, uint32_t first_instance) {
+static int geo_split(NvProg *pr, const p_draw *dw, const p_draw_idx *di, int count, int instances, uint32_t first_instance, uint32_t primitive_base) {
     // geo_prep can pass a record in g_geo_run. Each recursive draw reuses that
     // job, so keep the original range independent of the child draw's record.
     const p_draw original_dw = dw ? *dw : (p_draw){0};
@@ -178,8 +177,8 @@ static int geo_split(NvProg *pr, const p_draw *dw, const p_draw_idx *di, int cou
     g_geo_split_depth++;
     if (instances > 1) {
         for (int i = 0; i < instances; i++) {
-            if (dw) { a.instances = 1; a.base_instance = (int32_t)(first_instance + i); geo_draw(pr, &a, NULL); }
-            else { b.instances = 1; b.base_instance = (int32_t)(first_instance + i); geo_draw(pr, NULL, &b); }
+            if (dw) { a.instances = 1; a.base_instance = (int32_t)(first_instance + i); geo_draw(pr, &a, NULL, primitive_base); }
+            else { b.instances = 1; b.base_instance = (int32_t)(first_instance + i); geo_draw(pr, NULL, &b, primitive_base); }
         }
         g_geo_split_depth--; return 1;
     }
@@ -199,15 +198,15 @@ static int geo_split(NvProg *pr, const p_draw *dw, const p_draw_idx *di, int cou
         if (p0 == 0 && p1 == np) {   // one run is the whole draw: its own outputs are what exceed the bound, so halve it
             p1 = np / 2; if (!p1) { g_geo_split_depth--; return 0; }
         }
-        if (dw) { a.first = dw->first + p0 * per; a.count = (p1 - p0) * per; geo_draw(pr, &a, NULL); }
-        else { b.ibuf = di->ibuf + ((uint64_t)(p0 * per) << di->itype); b.count = (p1 - p0) * per; geo_draw(pr, NULL, &b); }
+        if (dw) { a.first = dw->first + p0 * per; a.count = (p1 - p0) * per; geo_draw(pr, &a, NULL, primitive_base + (uint32_t)p0); }
+        else { b.ibuf = di->ibuf + ((uint64_t)(p0 * per) << di->itype); b.count = (p1 - p0) * per; geo_draw(pr, NULL, &b, primitive_base + (uint32_t)p0); }
         p0 = p1;
     }
     g_geo_split_depth--;
     return 1;
 }
 
-static void geo_draw_(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0);
+static void geo_draw_(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint32_t primitive_base);
 static int g_geo_split_compute = -1, g_geo_full_colors = -1, g_geo_pack_legacy = -1;
 static int geo_pack_legacy(void) { if (g_geo_pack_legacy < 0) { const char *e = getenv("DM_NVN_GEOMETRY_PACK"); g_geo_pack_legacy = e && !strcmp(e, "legacy"); } return g_geo_pack_legacy; }
 static uint64_t g_geo_pack_small, g_geo_pack_large;
@@ -482,7 +481,7 @@ static int geo_query_run(void) {
     return g_geo_query_run;
 }
 // 1: j is ready; 0: this draw draws nothing; -1: cannot join an open run.
-static int geo_prep(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, geo_job *j, int may_wait) {
+static int geo_prep(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, geo_job *j, int may_wait, uint32_t primitive_base) {
     *j = (geo_job){.pr = pr, .vs = pr ? pr->sh[0] : nil, .gs = pr ? pr->sh[2] : nil,
                    .dw = dw0 ? *dw0 : (p_draw){0}, .di = di0 ? *di0 : (p_draw_idx){0}, .has_di = di0 != NULL};
     NvShader *vs = j->vs, *base = j->gs;
@@ -576,7 +575,7 @@ static int geo_prep(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, geo_jo
     if (groups > UINT32_MAX || span * (uint64_t)instances > (256ull << 20) / (MAX(record, 1u) * 4) ||
         (uint64_t)first_instance + instances > (uint64_t)UINT32_MAX + 1) {
         free(order);
-        if (may_wait && !geo_split(pr, dw0 ? &j->dw : NULL, dw0 ? NULL : &j->di, count, instances, first_instance))
+        if (may_wait && !geo_split(pr, dw0 ? &j->dw : NULL, dw0 ? NULL : &j->di, count, instances, first_instance, primitive_base))
             MLOG("[RED] geometry draw exceeds the capture or invocation bound");
         return may_wait ? 0 : -1;
     }
@@ -589,7 +588,7 @@ static int geo_prep(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, geo_jo
     uint64_t total = input_size + output_size + raw_size + packed_size + count_size + words * 4 + nu * 4 + sizeof(nvn_geo_capture) + sizeof(nvn_geo_pack_job) + sizeof(nvn_geo_lean_job) + 32 + 20 + 12 * 255;
     if (groups > UINT32_MAX || total > (256ull << 20) || np > UINT32_MAX) {
         free(order);
-        if (may_wait && !geo_split(pr, dw0 ? &j->dw : NULL, dw0 ? NULL : &j->di, count, instances, first_instance))
+        if (may_wait && !geo_split(pr, dw0 ? &j->dw : NULL, dw0 ? NULL : &j->di, count, instances, first_instance, primitive_base))
             MLOG("[RED] geometry draw needs %llu MiB of scratch, above the 256 MiB bound", (unsigned long long)(total >> 20));
         return may_wait ? 0 : -1;
     }
@@ -617,7 +616,8 @@ static int geo_prep(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, geo_jo
       if(keep)geo_ix_put(&ixkey,source,raw_n,lo,hi,nu,pmap,words,pcapture_ix,unique_count);
     }
     free(order);
-    uint32_t vi[8] = {(uint32_t)span, (uint32_t)instances, 0, 0, (uint32_t)np, 0, 0, 0}; memcpy(pinfo, vi, 32);
+    // geometry_counts.y is the guest primitive base, independent of local maps.
+    uint32_t vi[8] = {(uint32_t)span, (uint32_t)instances, 0, 0, (uint32_t)np, primitive_base, 0, 0}; memcpy(pinfo, vi, 32);
     nvn_geo_capture capture_info = {j->input, 0, {(uint32_t)first, (uint32_t)span, first_instance, (uint32_t)instances}, MAX(record, 1u), {0}};
     for (int k = 0; k < GEO_CAPTURE_WORDS; k++) capture_info.slot[k] = lean ? gs->geo_slot[k] : (int16_t)k;
     memcpy(pcapture_info, &capture_info, sizeof capture_info);
@@ -712,7 +712,7 @@ static int geo_run_walk(id<MTL4RenderCommandEncoder> re) {
         NvProg *pr = S.prog ? prog_get(S.prog) : nil;
         if (!pr || !pr->sh[2] || !pr->sh[2]->geo_vertices) break;
         if (geo_mesh_fn(pr, dw, di)) break;
-        int r = geo_prep(pr, dw, di, &g_geo_run[n], 0);
+        int r = geo_prep(pr, dw, di, &g_geo_run[n], 0, 0);
         if (r <= 0) break;
         int conflict=0;
         for (int i=0;i<n;i++) if (geo_access_conflict(&g_geo_run[i].access,&g_geo_run[n].access)) { conflict=1; break; }
@@ -724,8 +724,8 @@ static int geo_run_walk(id<MTL4RenderCommandEncoder> re) {
     S = s0; R = r0; g_pso_dirty = pd; g_dss_dirty = dd;
     return n;
 }
-static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) { cp_stamp start = cp_begin(); geo_draw_(pr, dw0, di0); cp_end(6, start); }
-static void geo_draw_(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
+static void geo_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint32_t primitive_base) { cp_stamp start = cp_begin(); geo_draw_(pr, dw0, di0, primitive_base); cp_end(6, start); }
+static void geo_draw_(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0, uint32_t primitive_base) {
     for (int i = 1; i < g_geo_nrun; i++) if (g_geo_run[i].op && g_geo_run[i].op == g_exec_cur) {
         g_geo_run[i].op = NULL; geo_raster(&g_geo_run[i], i == g_geo_nrun - 1); return;
     }
@@ -738,7 +738,7 @@ static void geo_draw_(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
     // CPU prepares the next run; retain sub_cut's deferral/fence safety gates.
     if (geo_cut_on()) sub_cut();
     geo_job *j0 = &g_geo_run[0];
-    if (geo_prep(pr, dw0, di0, j0, 1) <= 0) return;
+    if (geo_prep(pr, dw0, di0, j0, 1, primitive_base) <= 0) return;
     static id<MTLComputePipelineState> pack[5];   // count, parallel scan, write, fused small draw, legacy scan
     if (!pack[4]) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_nvn_geo_pack_msl) options:nil error:&e];
         const char *fn[5] = {"geo_pack_count", "geo_pack_scan", "geo_pack_write", "geo_pack_small", "geo_pack_scan_legacy"};

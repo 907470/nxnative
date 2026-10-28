@@ -185,6 +185,8 @@ t_geometry_feedback: t_geometry_feedback.m t_geometry.m $(MTL_T_DEP)
 check_t_geometry_feedback: t_geometry_feedback
 	MTL_DEBUG_LAYER=1 ./t_geometry_feedback
 run: check_t_geometry_feedback
+t_geometry_primitive_id: t_geometry_primitive_id.m t_geometry.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_geometry_primitive_id.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_direct_upload
 check_t_direct_upload: t_direct_upload
 	MTL_DEBUG_LAYER=1 ./t_direct_upload
