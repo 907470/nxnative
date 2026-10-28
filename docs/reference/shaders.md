@@ -809,6 +809,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** the per-shader key covers the pairs, and a paired vertex shader's key also covers its pixel shaders' keys (`shader_key`, `pair_keyed`), so a change to a profile's pairs rebuilds what it affects ([Pixel shader inputs the vertex shader does not write](#pixel-shader-inputs-the-vertex-shader-does-not-write)).
 - **Found on:** [13 Sentinels: Aegis Rim](../../dm/games/01003FC01670C000/README.md).
 
+### Target selection keeps the shader analysis files in the cache
+
+- **Symptom:** a repeated iOS-only shader build crashes with `FileNotFoundError` for `<key>_b.json` in the Mac output directory; requesting only Mac libraries with `IOSOUT` set still compiles iOS side libraries.
+- **Cause:** target selection excluded the Mac directory from the per-shader cache entirely, but cache-hit processing, paired vertex padding and the profile tables still read its MSL and reflection. Side-library paths tested `IOSOUT` rather than the selected targets. Prefilling the Metal cache also compiled validation samples for unrequested targets.
+- **Fix:** cache and restore the Mac MSL and reflection for every target; require and copy metallibs only for selected targets. A cache entry without its analysis source is a miss. Clear `IOSOUT` when iOS is not selected and restrict prefill validation to selected targets. The NSP script writes only the requested target's reuse key.
+- **Found on:** [Celeste](../../dm/games/01002B30028F6000/README.md#shaders), while reviewing PR #275 (resolved).
+- **Check:** real Metal output and cache comparisons are recorded in Celeste's shader note above. `test_shader_toolchain_cache.py` covers geometry analysis files, incomplete entries and prefill selection; `test_nsp_mac.py` checks target-specific reuse keys.
+
 ### Function constants specialized at load
 
 - **Symptom:** `fragmentFunction main0 cannot be used to build a pipeline state` (a Metal validation assertion).
