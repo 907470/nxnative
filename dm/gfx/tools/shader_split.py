@@ -1573,8 +1573,10 @@ def ue_legacy_jobs(files, parts=64):
     if not paks: return [], set()
     view = {}
     for p, r in sorted(paks, key=lambda x: (x[1].endswith('_P.pak'), x[1])):   # patch paks last, so they replace; one view per pak folder (one per version given)
-        pk = uepak.Pak(p)
-        for name in pk.files: view[(os.path.dirname(p), os.path.normpath(pk.mount + name))] = (p, r, name, pk.entry(name)['raw'])
+        try:   # all of a pak's names or none: a patch pak read halfway would still replace the base pak's files
+            pk = uepak.Pak(p)
+            view.update({(os.path.dirname(p), os.path.normpath(pk.mount + name)): (p, r, name, pk.entry(name)['raw']) for name in pk.files})
+        except (OSError, ValueError) as e: print(f'[RED] /{r}: the pak cannot be read ({e}); its shaders are left out', flush=True)
     jobs, cur, size, step = [], collections.defaultdict(list), 0, sum(v[3] for v in view.values()) / parts
     for p, r, name, raw in sorted(view.values(), key=lambda x: (x[1], x[2])):
         cur[(p, r)].append(name); size += raw
