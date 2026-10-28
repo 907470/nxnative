@@ -75,6 +75,7 @@ else:
 #     rows), so the games' registered builds rewrite as before. They are fixes of Nintendo's code that hold for any game on a platform with a small address space; a build
 #     without a reviewed implementation of one keeps the original code, logged but not red (games without virtual address memory never reach it)
 #   CAPABILITIES = {build ID: (name,...)}: verified main-build features exposed by fixups metadata to the launcher
+#   GENERALIZE = 'note': not read here; whether a general rule could replace the file's patches, listed by dm/tools/docs_patches.py in docs/agents/game-patches.md
 PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
 # Profiles outside the repository (DM_GAMES_DIR, folders separated by os.pathsep, which is ':' as in dm/games/game.py: the NSP script's provisional profile of a game being brought up) may have a
 # patches.py of their own builds too; they are loaded after the repository's, under the same rule (a build ID claimed twice stops the rewrite)
