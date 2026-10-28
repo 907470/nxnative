@@ -10,6 +10,7 @@ Each game the port knows has a folder `dm/games/<id>/`, named after the base gam
 - **`vk_capture.tsv`** (a Vulkan game that generates its shaders at run time, Super Mario Galaxy): the keys of the SPIR-V modules it generates.
 - **`gl_capture.tsv`** (an OpenGL game that puts its GLSL together at run time, Balatro): the files (`<key>.vert` / `<key>.frag`) of the shaders it compiles.
 - **`bf_want.tsv`**.
+- **`dual_want.tsv`** (optional): pixel shaders a pipeline blends with their output 1 as the second source (dual-source blending); `dmsh_build.py` gives each a dual-source entry point (`fs_dual`). The host lists them with `DM_NVN_DUAL_WANT=<file>` ([A written secondary blend source](../../docs/reference/rendering.md#a-written-secondary-blend-source-nvn-dual-source-blending)).
 - **`validated.tsv`** (optional): the chain this game was last green on, written by `scripts/regress.py check --record` (or `baseline --record`) when its comparison status is `PASS` or `CHANGED` and every tested boot run succeeds. A boot failure shared with the baseline still prevents recording. `quick` / `full` rows (the latest of each), `mode<TAB>chain=<DMSH_CHAIN> commit=<short SHA>[+dirty] date=<UTC day> machine=<model> macos=<version>`; a red result leaves the rows as they were. A build using a derived profile does not validate the repository profile. `regress.py list` shows it and whether that chain is the current one. It holds no game data; commit it with the pull request.
 - **`geo_mesh.tsv`** (optional): vertex / geometry shader pairs drawn with a passthrough geometry shader; `dmsh_build.py` builds a mesh library for each (`dmsh_mesh.py`), and the host draws such a pair's triangle lists as mesh draws ([Passthrough geometry shaders drawn by the vertex shader](../../docs/reference/shaders.md#passthrough-geometry-shaders-drawn-by-the-vertex-shader)). A pair not listed takes the compute path.
 - **`README.md`**: the game's notes: what its profile needs and why, what was found on it, how to reach a scene on the Mac, what is still open. Listed in [Games](#games).
@@ -104,6 +105,7 @@ One row per profile; the notes are each profile's `README.md`.
 | [Persona 5 Royal](01005CA01580E000/README.md) | `01005CA01580E000` | 1.0.2 | 13.3.2 | Atlus GFD / Needle (CRI middleware) | NVN |
 | [Pikmin 4](0100B7C00933A000/README.md) | `0100B7C00933A000` | 1.1.1 | 10.4.8 | Unreal Engine 4.26.2 | NVN |
 | [Pokémon Brilliant Diamond](0100000011D90000/README.md) | `0100000011D90000` | 1.3.0 | 11.4.3 | Unity 2019.4.27f1 IL2CPP | NVN |
+| [Pokémon Legends: Arceus](01001F5010DFA000/README.md) | `01001F5010DFA000` | 1.1.1 | 11.4.0 | Game Freak's engine (between Sword's and Trinity) | NVN |
 | [Pokémon Legends: Z-A](0100F43008C44000/README.md) | `0100F43008C44000` | 2.0.2 | 19.3.11 | Game Freak's Trinity engine | NVN |
 | [Pokémon Scarlet](0100A3D008C5C000/README.md) | `0100A3D008C5C000` | 1.0.0 | 13.3.5 | Game Freak's Trinity engine | NVN |
 | [Pokémon Shield](01008DB008C2C000/README.md) | `01008DB008C2C000` | 1.3.2 | 7.3.2 | Game Freak's engine (before Trinity) | NVN |
