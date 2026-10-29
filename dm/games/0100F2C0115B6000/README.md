@@ -73,6 +73,7 @@ Game-specific findings. The general host changes they led to are listed under [F
 - The issue #70 save: `DM_KEYS="20:A*6/4,f2480:LUp~5"` (title, load, jump, steer into the pond).
 - The issue #147 short streaming route uses a fresh copy of the issue #70 save and its corrected SDK module: `DM_FPS_TARGET=30 DM_KEYS="20:A*6/4,f2480:LUp~9,f4000:LUp~20,f4700:LRight~5,f5000:LUp~20"`, run for at least 220 s. This is a fall/respawn stress route, ending at Game Over in both short comparison runs; it is not a long surviving traversal test. The movement timings are repeatable, but the upload burst varies with streaming and CPU/GPU timing, so the deterministic staging regression complements it.
 - The in-cave autosave (`run/save`): keys `f2500:A,f2800:A,f3100:A,f3600:A`, shot at frame 4500. `DM_DETCLOCK` cannot be used: the game stops at frame 1 waiting for guest time.
+- `regress.py capture` records frame 2400 of [`smoke.tsv`](smoke.tsv) (Link in the cave, after the banner) for `regress.py replay`: every replay equals the live frame (noise 0, 2026-10-29).
 
 ## Found on this game
 
