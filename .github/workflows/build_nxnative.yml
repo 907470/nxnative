@@ -54,8 +54,11 @@ jobs:
           mkdir -p Games/${{ github.event.inputs.game_name }}
           gdown "${{ github.event.inputs.gdrive_file_id }}" -O game_download.archive
           
+          # Check file type and handle archives, .xci, or raw files correctly
           if file game_download.archive | grep -qE "Zip|compressed|tar"; then
             unzip -q game_download.archive -d Games/${{ github.event.inputs.game_name }}/
+          elif file game_download.archive | grep -qE "Nintendo|XCI"; then
+            mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.xci
           else
             mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.nsp
           fi
