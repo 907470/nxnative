@@ -100,6 +100,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md); [Mario Kart 8 Deluxe](../../dm/games/0100152000022000/README.md) binds a 2D array of fewer than six layers (format 0x44) at slot 10 of two pixel shaders that declare a cube there as a race loads, and it was bound as is; [Echoes of Wisdom](../../dm/games/01008CF01BAAC000/README.md#rendering-and-shaders) exposed the false error for an unused conditional cube input.
 - **Check:** `make -C dm/gfx/tests GAME=<id> check_t_cube_placeholder` uses production `tex_fit` and GPU sampling under Metal API validation. For 2D descriptors and one- and five-layer arrays, an unselected fallback preserves the other cube's blue output, a selected fallback reads zero, and binding alone raises no error; both cube and cube-array arguments are covered.
 
+### A 2D texture in a 3D slot binds the zero 3D texture
+
+- **Symptom:** `[RED] texture type mismatch: shader … declares slot … as Metal type 7, texture ID … is type 2 … bound as is` (or type 3, a 2D array); the reads are undefined.
+- **Cause:** the game leaves a 2D texture bound in a slot its shader samples as a 3D texture, and Metal makes a 3D view only of a 3D texture. Batman: Arkham Knight's shaders sample a volume at world coordinates through separate texture slots that hold 2D textures, mostly half-resolution render targets, from the first frames of New Story on (`553c51835a24a36a`, separate slot 2: a 720x406 RGBA16F target); the pass dump shows the game binding them there, so no bind was lost, and the game does create 3D textures (2x2x2, 32x32x32, 71x40x64). What the Switch's texture unit reads from a 2D texture header through a 3D instruction is not known.
+- **Fix:** as for a cube slot, `tex_fit` binds the zero 3D texture, a defined read, for a 2D texture or 2D array in a 3D slot, and logs the first case (`3D binding fallback`); other mismatches no view bridges are still reported and bound as is.
+- **Found on:** [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md#files-and-shaders) (four shaders, 3,813 draws in a run to the diner). The same red line is recorded on [FINAL FANTASY RESONANCE](../../dm/games/0100606026F12000/README.md), [ROMANCE OF THE THREE KINGDOMS 8 REMAKE](../../dm/games/0100C2A01A730000/README.md), [Luigi's Mansion 3](../../dm/games/0100DCA0064A6000/README.md) and [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md), none of them run with this rule.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_cube_placeholder` also covers a 2D texture and one- and five-layer 2D arrays in a `texture3d` argument: an unselected fallback leaves the real volume's output alone, a selected one reads zero.
+
 ### Integer views for images a shader declares uint or int
 
 - **Symptom:** translucent UI (frosted text bands, button guides, dialog headers) yellow and white.
