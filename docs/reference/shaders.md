@@ -459,6 +459,20 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** general: `dmsh_build.py` (`vs_init`) sets every `float4` output to (0, 0, 0, 1) right after it, and the translated body overwrites what it writes.
 - **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md) (Mac and iPhone): 12,281 of 18,410 vertex outputs never write w. The sun's shadow map (2048×2048, depth 32-bit float) was correct; the surface shaders compute the lookup from a world position the vertex shader passes in `locn24`, divided by its w. Found with `DM_NVN_TEXRAW` on the shadow map, the light matrices from `DM_NVN_CBDUMP`, and a hand-edited copy of one surface shader that wrote the compare value and the stored depth as its colour. Compared with forcing the compare to pass (`compareFunction` always): the same brightness, plus shadows from the fences, the house and the trees.
 
+### Early fragment tests from the control section
+
+- **Symptom:** rows of dark dots along contour lines of alpha-tested surfaces drawn after a depth pre-pass (Tears of the Kingdom: the stone lattice in front of the Great Sky Island start, as reported by MacNativeGames ae8f4f4; not reproduced here).
+- **Cause:** byte +0x718 of a pixel shader's NVN control section is its early fragment tests flag: the NVN driver's getter is `ldrb w0, [x8, #0x718]` in the `sdk` of all 21 games on hand, and Ryujinx receives it as the 3D engine's EarlyZForce. The translator always passed `earlyZForce` false. Without the attribute, Metal tests depth after a fragment shader that writes memory. In the lattice's G-buffer pass (EQUAL, no depth write, after a LESS pre-pass) that late depth differed by an ulp from the pre-pass along contour lines, the test failed there and the G-buffer kept its clear value.
+- **Fix:** general: `dmsh_build.py` (`early_fragment_tests`) sets `early_fragment_tests` in the translation job of every pixel shader whose control byte +0x718 is set. `dmsh_xlate` passes it to Ryujinx as `earlyZForce`, and the MSL entry point is declared `[[ early_fragment_tests ]]`. A shader whose SPH writes depth (word 19 bit 1) is left as it is, since a test made early would not use the depth it computes.
+- **Found on:** [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#found-on-this-game): 1,677 of its pixel shaders set the flag, and none of them writes depth. Rebuilding the chain changed exactly those 1,677 shaders' MSL, by the attribute alone. Elsewhere the attribute alone changed 699 of Wonder's 16,268 shaders and 51 of Scarlet's 30,142. Breath of the Wild and ANIMAL WELL set the flag in no shader.
+- **Check:** `dm/gfx/tests/test_early_fragment_tests.py`.
+
+### Dead-code removal dropped the inputs of atomics
+
+- **Cause:** Ryujinx's `Optimizer.RemoveNode` removes a dead node, then follows each source whose last use went away into the node that produced it. It did so even when that producer has side effects, such as an atomic or a call whose result is unused. Such a producer stays in the block, but its sources lost their uses, so the next dead-code pass deleted the chain that feeds it, and the atomic read undefined values.
+- **Fix:** general: `RemoveNode` follows only into producers without side effects (`HasSideEffects`). This follows MacNativeGames' translator patch 0002.
+- **Found on:** no game on hand so far. Rebuilding the chain changed no shader for this reason in Tears of the Kingdom, Breath of the Wild, Wonder, Scarlet or ANIMAL WELL (94,717 shaders); every MSL change was the early fragment tests attribute.
+
 ### Position invariance across shaders
 
 - **Symptom:** the ground kept stale 32×32 blocks where the G-buffer draw failed the depth test: blocks of a stale image where a depth pre-pass and a later pass with other vertex shaders meet (Odyssey: 32×32 blocks on every fourth frame).
