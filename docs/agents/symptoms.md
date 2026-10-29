@@ -23,6 +23,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 
 ## Rewriter
 
+- `NameError: name 'CS_ARCH_ARM64' is not defined` at the start of `patch_nso.py`; now `[RED] Capstone 6.… is unsupported` from the NSP script or `patch_nso.py`. → [Capstone API version](../reference/rewriter.md#capstone-api-version)
 - an updated game loses a needed cut because its NSO build ID changed, although the relevant code still matches a verified version; the rewriter reports `[RED] function patch ... skipped` when that match cannot be established, and the NSP script ends with `[RED] main: no function patch carries the registered builds' fixes to this build` or `[RED] main: function patches not applied` (Super Smash Bros. Ultimate 13.0.1: a static-initialiser abort in `nninitStartup`, GitHub issue #375). → [Function-matched cuts for unregistered builds](../reference/rewriter.md#function-matched-cuts-for-unregistered-builds)
 - `jump table <addr>` assertion in `patch_nso.py`, in a Unity / IL2CPP `main`. → [Offset jump tables through x18 read at rewrite time](../reference/rewriter.md#offset-jump-tables-through-x18-read-at-rewrite-time)
 - `jump table <addr>` assertion in `patch_nso.py`, in a `subsdk`. → [Offset jump tables with the bounds check on another register](../reference/rewriter.md#offset-jump-tables-with-the-bounds-check-on-another-register)
