@@ -1,0 +1,92 @@
+name: Build nxnative IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_name:
+        description: 'Folder/Game name to output'
+        required: true
+        default: 'MarioWonder'
+      gdrive_file_id:
+        description: 'Google Drive File ID or Share URL of the game archive'
+        required: true
+      separate_romfs:
+        description: 'Separate ROMFS for large games (true/false)'
+        required: false
+        default: 'true'
+
+jobs:
+  build:
+    runs-on: macos-14 # Apple Silicon M1 macOS runner
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install System Dependencies via Homebrew
+        run: |
+          brew install xcodegen zstd glslang
+          brew install --cask dotnet-sdk
+
+      - name: Install Python Dependencies & nsz
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
+
+      - name: Download Xcode Metal Toolchain Component
+        run: |
+          xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Restore prod.keys from GitHub Secrets
+        run: |
+          mkdir -p ~/.switch
+          echo "${{ secrets.PROD_KEYS }}" > ~/.switch/prod.keys
+
+      - name: Download Game Files from Google Drive
+        run: |
+          mkdir -p Games/${{ github.event.inputs.game_name }}
+          gdown "${{ github.event.inputs.gdrive_file_id }}" -O game_download.archive
+          
+          FILE_TYPE=$(file --mime-type -b game_download.archive)
+          echo "Detected file mime-type: $FILE_TYPE"
+          
+          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
+            unzip -q game_download.archive -d Games/${{ github.event.inputs.game_name }}/ || true
+          fi
+          
+          if [ -z "$(find Games/${{ github.event.inputs.game_name }} -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
+            mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.xci
+          else
+            rm -f game_download.archive
+          fi
+          
+          # Flatten nested folders so the script finds the game files immediately
+          find Games/${{ github.event.inputs.game_name }} -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} Games/${{ github.event.inputs.game_name }}/ \;
+          
+          echo "Files ready in game folder:"
+          ls -la Games/${{ github.event.inputs.game_name }}
+
+      - name: Run Build Script
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ github.event.inputs.separate_romfs }}" = "true" ]; then
+            EXTRA_ARGS="--romfs separate"
+          fi
+          
+          python3 scripts/build_ipa_from_nsp.py Games/${{ github.event.inputs.game_name }} -k ~/.switch/prod.keys $EXTRA_ARGS
+
+      - name: Upload Generated Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-nxnative-output
+          path: |
+            Games/**/*.ipa
+            Games/**/*.json
+            Games/**/*.zip
