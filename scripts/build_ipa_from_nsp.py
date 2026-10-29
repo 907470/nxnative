@@ -905,7 +905,7 @@ def check_ios_sdk(env):   # the iOS platform is a separate download in Xcode's C
 def check_translator(xlate, env):
     """The shader translator is a framework-dependent apphost (universal since issue #54): it needs a .NET runtime of the slice it starts as, which `dotnet` on PATH and nx_extract (built
     for the SDK's own architecture) do not prove. Without one it prints nothing on stdout, and dmsh_build.py stops at the shader step with an empty `xlate_source: lock ... / actual`.
-    `--source-sha` translates nothing, so one short run proves the runtime before the extraction (dmsh_chain.py xlate_embedded reports the same failure at the shader step)"""
+    `--source-sha` translates nothing, so one short run proves the runtime before the extraction (tool_lock.py xlate_embedded reports the same failure at the shader step)"""
     try: r = subprocess.run([str(xlate), '--source-sha'], capture_output=True, text=True, env=env, timeout=60, errors='replace')
     except (OSError, subprocess.SubprocessError) as e: raise BuildError(f'the shader translator does not start ({e}): {xlate}') from e
     if r.returncode == 0 and r.stdout.strip(): return
