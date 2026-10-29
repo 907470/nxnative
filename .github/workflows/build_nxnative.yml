@@ -25,7 +25,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest # Uses the latest available macOS Apple Silicon runner
+    runs-on: macos-26 # Uses the latest available macOS Apple Silicon runner
 
     steps:
       - name: Checkout Repository
