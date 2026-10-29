@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: 'Folder/Game name to output'
+        description: 'Folder/Game name to output (e.g. BrilliantDiamond)'
         required: true
-        default: 'MarioWonder'
+        default: 'BrilliantDiamond'
       gdrive_file_id:
         description: 'Google Drive File ID or Share URL of the game archive'
         required: true
@@ -17,7 +17,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest # Apple Silicon M1 macOS runner
+    runs-on: macos-15 # Uses the latest available macOS Apple Silicon runner
 
     steps:
       - name: Checkout Repository
@@ -48,6 +48,8 @@ jobs:
         run: |
           mkdir -p ~/.switch
           echo "${{ secrets.PROD_KEYS }}" > ~/.switch/prod.keys
+          echo "Checking prod.keys setup:"
+          ls -la ~/.switch/prod.keys
 
       - name: Download Game Files from Google Drive
         run: |
@@ -57,27 +59,24 @@ jobs:
           FILE_TYPE=$(file --mime-type -b game_download.archive)
           echo "Detected file mime-type: $FILE_TYPE"
           
-          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
+          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar"; then
             unzip -q game_download.archive -d Games/${{ github.event.inputs.game_name }}/ || true
-          fi
-          
-          if [ -z "$(find Games/${{ github.event.inputs.game_name }} -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
-            mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.xci
-          else
             rm -f game_download.archive
+          else
+            mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.xci
           fi
           
-          # Flatten nested folders so the script finds the game files immediately
+          # Flatten nested folder structures if unzipped
           find Games/${{ github.event.inputs.game_name }} -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} Games/${{ github.event.inputs.game_name }}/ \;
           
-          echo "Files ready in game folder:"
+          echo "=== Final contents of Games/${{ github.event.inputs.game_name }} ==="
           ls -la Games/${{ github.event.inputs.game_name }}
 
       - name: Run Build Script
         run: |
-          EXTRA_ARGS=""
+          EXTRA_ARGS="--allow-other-metal"
           if [ "${{ github.event.inputs.separate_romfs }}" = "true" ]; then
-            EXTRA_ARGS="--romfs separate"
+            EXTRA_ARGS="$EXTRA_ARGS --romfs separate"
           fi
           
           python3 scripts/build_ipa_from_nsp.py Games/${{ github.event.inputs.game_name }} -k ~/.switch/prod.keys $EXTRA_ARGS
