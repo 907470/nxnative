@@ -54,14 +54,24 @@ jobs:
           mkdir -p Games/${{ github.event.inputs.game_name }}
           gdown "${{ github.event.inputs.gdrive_file_id }}" -O game_download.archive
           
-          # Check file type and handle archives, .xci, or raw files correctly
-          if file game_download.archive | grep -qE "Zip|compressed|tar"; then
-            unzip -q game_download.archive -d Games/${{ github.event.inputs.game_name }}/
-          elif file game_download.archive | grep -qE "Nintendo|XCI"; then
+          FILE_TYPE=$(file --mime-type -b game_download.archive)
+          echo "Detected file mime-type: $FILE_TYPE"
+          
+          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
+            unzip -q game_download.archive -d Games/${{ github.event.inputs.game_name }}/ || true
+          fi
+          
+          if [ -z "$(find Games/${{ github.event.inputs.game_name }} -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
             mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.xci
           else
-            mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.nsp
+            rm -f game_download.archive
           fi
+          
+          # Flatten nested folders so the script finds the game files immediately
+          find Games/${{ github.event.inputs.game_name }} -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} Games/${{ github.event.inputs.game_name }}/ \;
+          
+          echo "Files ready in game folder:"
+          ls -la Games/${{ github.event.inputs.game_name }}
 
       - name: Run Build Script
         run: |
