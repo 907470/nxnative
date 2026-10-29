@@ -481,6 +481,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** general: `dmsh_build.py` (`early_fragment_tests`) sets `early_fragment_tests` in the translation job of every pixel shader whose control byte +0x718 is set. `dmsh_xlate` passes it to Ryujinx as `earlyZForce`, and the MSL entry point is declared `[[ early_fragment_tests ]]`. A shader whose SPH writes depth (word 19 bit 1) is left as it is, since a test made early would not use the depth it computes.
 - **Found on:** [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#found-on-this-game): 1,677 of its pixel shaders set the flag, and none of them writes depth. Rebuilding the chain changed exactly those 1,677 shaders' MSL, by the attribute alone. Elsewhere the attribute alone changed 699 of Wonder's 16,268 shaders and 51 of Scarlet's 30,142. Breath of the Wild and ANIMAL WELL set the flag in no shader.
 - **Check:** `dm/gfx/tests/test_early_fragment_tests.py`.
+- **Open:** with the attribute, a fragment shader that writes memory gives a picture that varies from run to run on Apple's GPU: [Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md#open)'s `8f470f5ce5864df7`, a per-fragment visibility flag (2026-10-30; the frame's replays: one digest without the attribute, 3 to 7 in 8 with it).
 
 ### Dead-code removal dropped the inputs of atomics
 
