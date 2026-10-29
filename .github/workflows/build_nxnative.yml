@@ -90,12 +90,7 @@ jobs:
 
       - name: Run Build Script
         run: |
-          EXTRA_ARGS="--allow-other-metal"
-          if [ "${{ github.event.inputs.separate_romfs }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --romfs separate"
-          fi
-          
-          python3 scripts/build_ipa_from_nsp.py Games/${{ github.event.inputs.game_name }} -k ~/.switch/prod.keys $EXTRA_ARGS
+          python3 scripts/build_ipa_from_nsp.py Games/${{ github.event.inputs.game_name }} -k ~/.switch/prod.keys
 
       - name: Upload Generated Artifacts
         uses: actions/upload-artifact@v4
