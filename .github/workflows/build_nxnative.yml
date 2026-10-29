@@ -8,7 +8,7 @@ on:
         required: true
         default: 'BrilliantDiamond'
       gdrive_file_id:
-        description: 'Google Drive File ID or Share URL of the game archive'
+        description: 'Google Drive File ID or Share URL of the game archive (.zip or .7z)'
         required: true
       device_type:
         description: 'Target Device / Architecture'
@@ -42,7 +42,7 @@ jobs:
 
       - name: Install System Dependencies via Homebrew
         run: |
-          brew install xcodegen zstd glslang
+          brew install xcodegen zstd glslang p7zip
           brew install --cask dotnet-sdk
 
       - name: Install Python Dependencies & nsz
@@ -72,17 +72,23 @@ jobs:
           FILE_TYPE=$(file --mime-type -b "$GAME_DIR/game_download.archive")
           echo "Detected file mime-type: $FILE_TYPE"
           
-          # Check if it's a zip or compressed archive and extract it; otherwise treat as raw game file
+          # Handle different archive formats or raw game files
           if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
+            # Try unzipping first
             unzip -q "$GAME_DIR/game_download.archive" -d "$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
+            
+            # If it's a 7z archive, 7z command will extract it
+            if [ -f "$GAME_DIR/game_download.archive" ]; then
+              7z x "$GAME_DIR/game_download.archive" -o"$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
+            fi
           fi
           
-          # If no game files are found yet, name the download based on its extension or fallback to .xci
+          # If no game files extracted and it's still sitting as a raw file, name it .xci
           if [ -z "$(find "$GAME_DIR" -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
             mv "$GAME_DIR/game_download.archive" "$GAME_DIR/game.xci" 2>/dev/null || true
           fi
           
-          # Flatten nested folder structures to ensure files sit directly in the game folder
+          # Flatten nested folder structures to ensure all files (.xci and updates as .nsp) sit directly in the game folder
           find "$GAME_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$GAME_DIR/" \;
           
           echo "=== Final contents of $GAME_DIR ==="
