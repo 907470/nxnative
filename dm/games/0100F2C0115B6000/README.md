@@ -82,6 +82,7 @@ Game-specific findings. The general host changes they led to are listed under [F
 General host changes first needed here; each applies to every game:
 
 - **Resolved in the host: render passes into textures uploaded from their storage** write the storage, and storage-backed textures get render-target use when attached: [Render passes into textures uploaded from their storage](../../../docs/reference/nvn-objects.md#render-passes-into-textures-uploaded-from-their-storage). Covered by `t_readback`; checked on the Mac along the grass route.
+- [A capture refused after a change to the reflection structs](../../../docs/reference/nvn-objects.md#a-capture-refused-after-a-change-to-the-reflection-structs).
 
 - **Early fragment tests from control +0x718 (chain a76212ee4af0):** [Early fragment tests from the control section](../../../docs/reference/shaders.md#early-fragment-tests-from-the-control-section). 1,677 of the 1.4.3 pixel shaders set the flag, none of them writes depth. The Great Sky Island lattice dots that MacNativeGames reported were not reproduced or checked here.
 
