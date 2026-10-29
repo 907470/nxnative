@@ -908,6 +908,14 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** the host's GL layer (`dm/gfx/gl/hle_gl.m`) answers the EGL imports and `eglGetProcAddress` (the rest of this section).
 - **Found on:** [Digimon Story Cyber Sleuth: Complete Edition](../../dm/games/010014E00DB56000/README.md) (SDK 6.4.0, Media.Vision's MVGL engine; one boot).
 
+### `glFlush` hands the frame so far to the GPU
+
+- **Symptom:** the app closes with no message of its own, `[dm] CRASH sig=11 addr=0 pc=0` and a guest return address inside `main` (Well Dweller: `lr=main+0x3409a78`, the same address every time); `DM_GL_STUBS=1` then names the call: `[RED] glFlush called: not implemented, returns 0`.
+- **Cause:** `glFlush` is not one of the layer's names, so `eglGetProcAddress` returns a null pointer, which the game stores in its own function table and calls when it opens a menu. `blr` into address 0 is a signal, not an abort, so nothing else says which function was wanted. A game's loader asks for the whole GL 4.6 name list (Well Dweller: 215 names, mostly 3.3+ features it never calls), so a null pointer by itself is correct; calling one is not.
+- **Fix:** `glFlush` flushes pending clears and commits the open command buffer without waiting (`GLB(glFlush, …)` next to `glFinish` in `dm/gfx/gl/hle_gl.m`), and the calls after it start a new command buffer. `DM_GL_STUBS=1` remains the way to name a missing one, and `DM_GL_MISSES=1` prints every name the loader asked for and the layer does not implement.
+- **Check:** Well Dweller, the same scripted input that crashed at the pause menu: the OPTIONS, GRAPHICS, STATS and PAGES screens open and the game returns to play (`[gl] frame 15300`, 35 draws per frame).
+- **Found on:** [Well Dweller](../../dm/games/0100217023F6C000/README.md).
+
 ### Direct GL imports use the same implementations as the loader
 
 - **Symptom:** `UNIMPL glCreateShader` returns 0, followed by `UNIMPL glShaderSource`, `glCompileShader`, `glGetShaderiv` and `glGetShaderInfoLog`; the game crashes in `sdk` with a null shader handle even though EGL initialized.
@@ -922,6 +930,14 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Fix:** `profile_guess.py` decides `graphics gl` when `main` imports `eglCreateWindowSurface` and names `glShaderSource`, and now leaves `vkGetInstanceProcAddr` out of its Vulkan count.
 - **Found on:** [Digimon Story Cyber Sleuth: Complete Edition](../../dm/games/010014E00DB56000/README.md): `main` imports `nvnBootstrapLoader` and 13 EGL functions. Its graphics setup (`main+0x5ed8f0`) makes an NVN device first, which only a helper beside the movie player uses (`main+0x528000`–`+0x52c400`: a memory pool and four textures next to the movie's GL textures). Then `eglGetDisplay`, `eglBindAPI(EGL_OPENGL_API)`, a 4.5 core context, a window surface on `vi::CreateLayer(w, h)` and a glad loader (`main+0x52c460`). Of the 22 games extracted here (at the time), only Digimon matches the rule. [Balatro](../../dm/games/0100CD801CE5E000/README.md) (SDK 18.3.2, LÖVE 11.4 on OpenGL with SDL and LuaJIT; one boot): `main` imports the EGL functions and `vkGetInstanceProcAddr`, SDL's Vulkan loader, which nothing calls (`subsdk1` is NVIDIA's Vulkan driver); Hades and both Galaxies import 99 or 100 Vulkan functions, `vkCreateInstance` among them.
 - **Note:** [Absolum](../../dm/games/0100A83022A22000/README.md) imports the same EGL functions (SDL3) but renders with NVN and names no GL function.
+
+### Draws from client memory
+
+- **Symptom:** the game draws thousands of vertices per frame and the window shows text only; a sprite scene is black while its text layer is perfect.
+- **Cause:** the draw reads its vertices from a **client-memory array** — `glVertexAttribPointer` with no buffer bound, which desktop GL allows and Metal does not. The layer keeps `a->off = (uintptr_t)ptr; a->buf = S.array_buf;` in `h_glVertexAttribPointer`, so `a->buf == 0` marks client memory, and `draw_setup` used to drop such draws with one `[RED] vertex attribute 0 reads client memory or a buffer with no data (not implemented)` line. GameMaker's runner does exactly this for every sprite, background and screen composite; only its text path uses a real `GL_ARRAY_BUFFER`, which is why the text-only screens looked complete.
+- **Fix:** `draw_setup` copies the vertices a draw touches into a transient `MTLBuffer` (`arena_alloc`) and binds that instead. The block keeps vertex *i* at *i* × stride from its start, as the game's array does, so the draw's first vertex, its indices and its base vertex read the same vertices unchanged; only the range *lo*..*hi* is copied: `first`..`first + count` for `glDrawArrays`, the smallest and largest index plus the base vertex for `glDrawElements` (`draw_span`, which reads the indices only when a draw has a client-memory array, so draws from vertex buffers cost nothing more), and elements 0..⌈instances / divisor⌉ for a per-instance attribute. A bound buffer with no data still drops with `[RED] vertex attribute %d reads a buffer with no data (%u)`, and a block over 128 MB is RED as well. Dropped draws are counted by reason in the layer's 300-frame line (`dropped draws since the last record: … no program, … no pass, … no attribute buffer, … no pipeline`).
+- **Check:** Well Dweller's dropped-draw counter (`frame … dropped draws since the last record: … no attribute buffer …`) went from 11,885 to 0 and its draws from 274 to 22,577 per 300 frames, and the window then showed the same art as the game's own surface.
+- **Found on:** [Well Dweller](../../dm/games/0100217023F6C000/README.md) (GameMaker Studio 2, SDK 22.2.0). Any GameMaker title whose screens are mostly sprites will hit it; Balatro does not, because LÖVE queues every draw with its own buffers.
 
 ### NVN in NROs under an SDL main that names GL
 
