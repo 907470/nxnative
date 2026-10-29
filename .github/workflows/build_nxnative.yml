@@ -52,7 +52,7 @@ jobs:
       - name: Download Game Files from Google Drive
         run: |
           mkdir -p Games/${{ github.event.inputs.game_name }}
-          gdown --fuzzy "${{ github.event.inputs.gdrive_file_id }}" -O game_download.archive
+          gdown "${{ github.event.inputs.gdrive_file_id }}" -O game_download.archive
           
           if file game_download.archive | grep -qE "Zip|compressed|tar"; then
             unzip -q game_download.archive -d Games/${{ github.event.inputs.game_name }}/
