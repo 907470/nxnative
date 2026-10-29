@@ -222,7 +222,7 @@ Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) wit
 <tr>
 <td align="center" valign="top" width="33%"><img src="docs/images/batman-arkham-knight.jpg" width="256" alt="Batman: Arkham Knight"><br><b><a href="dm/games/0100ACD0163D0000/README.md">Batman: Arkham Knight</a></b></td>
 <td align="center" valign="top" width="33%"><img src="docs/images/bastion.jpg" width="256" alt="Bastion"><br><b><a href="dm/games/010038600B27E000/README.md">Bastion</a></b></td>
-<td></td>
+<td align="center" valign="top" width="33%"><img src="docs/images/baba-is-you.jpg" width="256" alt="Baba Is You"><br><b><a href="dm/games/01002CD00A51C000/README.md">Baba Is You</a></b></td>
 </tr>
 </table>
 <!-- end of gallery -->
