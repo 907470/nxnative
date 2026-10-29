@@ -70,15 +70,23 @@ static int cap_reg_add(uint64_t lo, uint64_t size, uint32_t kind, uint32_t submi
     return pos;
 }
 static uint32_t g_cap_cur_submit;
+static char g_cap_where[96]; static const uint8_t *g_cap_where_base;   // what is being encoded, for the red lines below (a record: its op, and the base its field offsets count from)
+#define CAP_WHERE(base, ...) (snprintf(g_cap_where, sizeof g_cap_where, __VA_ARGS__), g_cap_where_base = (const uint8_t *)(base))
+static const char *cap_where(const uint64_t *field) {
+    static char b[128]; uint64_t off = (uint64_t)((const uint8_t *)field - g_cap_where_base);
+    if (g_cap_where_base && off < (64u << 20)) snprintf(b, sizeof b, "%s, field +%llu", g_cap_where, (unsigned long long)off); else strlcpy(b, g_cap_where, sizeof b);
+    return b;
+}
 static int cap_enc_addr(void *ctx, uint64_t *field, uint64_t len, int writable) {
     (void)ctx; (void)writable;
     uint64_t v = *field; if (!v) return 1;
     int i = cap_reg_find(v);
     if (i < 0 && len && len <= (1u << 20) && nvn_host_readable(v, len)) {   // memory outside the pools a record reads (deferred handles, event words): a region of its own
-        for (uint32_t k = 0; k < g_cap_nreg; k++) if (g_cap_reg[k].lo < v + len && v < g_cap_reg[k].lo + g_cap_reg[k].size) { cap_fail("a record's memory straddles a region"); return 1; }
+        for (uint32_t k = 0; k < g_cap_nreg; k++) if (g_cap_reg[k].lo < v + len && v < g_cap_reg[k].lo + g_cap_reg[k].size) { cap_fail("a record's memory straddles a region");
+            MLOG("[RED] DM_NVN_CAPTURE: %#llx (%llu bytes) straddles region %#llx (%llu bytes): %s", (unsigned long long)v, (unsigned long long)len, (unsigned long long)g_cap_reg[k].lo, (unsigned long long)g_cap_reg[k].size, cap_where(field)); return 1; }
         i = cap_reg_add(v, len, 1, g_cap_cur_submit);
     }
-    if (i < 0) { if (g_cap_unmapped++ < 8) MLOG("[RED] DM_NVN_CAPTURE: a record names %#llx (%llu bytes), outside every pool: kept as it is (the replay resolves it as the live run does, to nothing)", (unsigned long long)v, (unsigned long long)len); return 1; }
+    if (i < 0) { if (g_cap_unmapped++ < 8) MLOG("[RED] DM_NVN_CAPTURE: a record names %#llx (%llu bytes), outside every pool: kept as it is (the replay resolves it as the live run does, to nothing): %s", (unsigned long long)v, (unsigned long long)len, cap_where(field)); return 1; }
     *field = cap_addr(g_cap_rid[i], v - g_cap_reg[i].lo);
     return 1;
 }
@@ -109,12 +117,18 @@ static uint64_t cap_pool_obj(const pool_t *p) {
     cap_enc_addr(NULL, &o.mem, 0, 0); cap_buf_put(&g_cap_pobj, &o, sizeof o);
     return cap_obj(CAP_K_POOL, idx);
 }
+static void cap_tex_enc(tex_t *t, const char *what) {   // cap_tex_fields, labelled for the red lines (inside a record: the record's label follows)
+    char sv[sizeof g_cap_where]; const uint8_t *sb = g_cap_where_base; memcpy(sv, g_cap_where, sizeof sv);
+    CAP_WHERE(t, "%s ser=%llu%s%s", what, (unsigned long long)t->serial, sb ? " in " : "", sb ? sv : "");
+    cap_tex_fields(t, &g_cap_enc, NULL);
+    memcpy(g_cap_where, sv, sizeof sv); g_cap_where_base = sb;
+}
 static uint64_t cap_tex_obj(const tex_t *src) {   // a texture snapshot (by content), relocated
     tex_t t = *src;
     void *have = nvn_hm_get(&g_cap_tex, &t); if (have) return cap_obj(CAP_K_TEX, (uint64_t)(uintptr_t)have - 1);
     uint32_t idx = g_cap_ntex++; nvn_hm_put(&g_cap_tex, &t, (void *)(uintptr_t)(idx + 1));
     cap_tex_read(&t, 1);
-    cap_tex_fields(&t, &g_cap_enc, NULL);
+    cap_tex_enc(&t, "texture object");
     uint32_t hd[2] = {idx, 0}; cap_buf_put(&g_cap_tobj, hd, 8); cap_buf_put(&g_cap_tobj, &t, sizeof t);
     return cap_obj(CAP_K_TEX, idx);
 }
@@ -128,7 +142,7 @@ static int cap_enc_obj(void *ctx, int kind, uint64_t *field, uint8_t *payload, u
         case CAP_K_TEX:
             if (g_cap_orig && v >= (uint64_t)(uintptr_t)g_cap_orig && v + sizeof(tex_t) <= (uint64_t)(uintptr_t)g_cap_orig + size) {   // the snapshot inside the record
                 uint64_t off = v - (uint64_t)(uintptr_t)g_cap_orig; tex_t *in = (tex_t *)(payload + off);
-                cap_tex_read(in, 1); cap_tex_fields(in, &g_cap_enc, NULL); *field = cap_obj(CAP_K_TEXIN, off); return 1;
+                cap_tex_read(in, 1); cap_tex_enc(in, "texture snapshot"); *field = cap_obj(CAP_K_TEXIN, off); return 1;
             }
             *field = cap_tex_obj((const tex_t *)(uintptr_t)v); return 1;
         case CAP_K_PROG: {
@@ -176,11 +190,11 @@ static void cap_seg_write(uint32_t idx) {   // copy the records from the segment
     uint8_t *b = malloc(8 + n); uint32_t hd[2] = {idx, (uint32_t)n}; memcpy(b, hd, 8); memcpy(b + 8, p, n);
     for (size_t o = 0; o < n;) {
         op_hdr h; memcpy(&h, b + 8 + o, 8);
-        g_cap_orig = p + o + 8;
+        g_cap_orig = p + o + 8; CAP_WHERE(b + 8 + o + 8, "op %u (%u bytes) at +%zu of segment %u", h.op, h.size, o, idx);
         if (!cap_rec_fields(h.op, b + 8 + o + 8, h.size, &g_cap_enc, NULL)) { cap_fail("a record the capture walk does not know"); MLOG("[RED] DM_NVN_CAPTURE: op %u size %u not walked", h.op, h.size); }
         o += h.size;
     }
-    g_cap_orig = NULL;
+    g_cap_orig = NULL; CAP_WHERE(NULL, "-");
     cap_put(&g_cap_w, CAP_SEGM, g_cap_cur_submit, b, 8 + n, 1); free(b); g_cap_segs++;
 }
 
@@ -246,7 +260,7 @@ static void cap_tex_read(const tex_t *t, int rec) {   // rec: named by a record 
         pthread_mutex_lock(&g_smu); int live = nvn_hm_get(&g_tex_live, &t->serial) != NULL; pthread_mutex_unlock(&g_smu);
         int cpu = tex_cpu_written(t->serial) || ([o isKindOfClass:[NvPkg class]] && !t->has_layout);
         cap_tknd k = {*t, (live ? CAP_TK_LIVE : 0) | (cpu ? CAP_TK_CPU : 0), 0};
-        if (k.kind) { cap_tex_fields(&k.t, &g_cap_enc, NULL); cap_buf_put(&g_cap_kind, &k, sizeof k); }
+        if (k.kind) { cap_tex_enc(&k.t, "texture kind"); cap_buf_put(&g_cap_kind, &k, sizeof k); }
     }
     if (!o || [o isKindOfClass:[NvPkg class]] || ![o conformsToProtocol:@protocol(MTLTexture)]) return;   // made at first use (as live, from the pools), or uploaded from the pools
     id<MTLTexture> mt = o; if (mt.parentTexture) mt = mt.parentTexture;
@@ -263,7 +277,7 @@ static void cap_tex_read(const tex_t *t, int rec) {   // rec: named by a record 
     if (!b) { free(subs); cap_fail("a texture readback buffer could not be made"); return; }
     cap_tpix h = {*t, (uint32_t)mt.pixelFormat, (uint32_t)mt.textureType, (uint32_t)mt.width, (uint32_t)mt.height, (uint32_t)mt.depth, (uint32_t)mt.mipmapLevelCount,
                   (uint32_t)(mt.textureType == MTLTextureTypeCube || mt.textureType == MTLTextureTypeCubeArray ? 6 * mt.arrayLength : mt.arrayLength), (uint32_t)mt.sampleCount, nsub, 0};
-    cap_tex_fields(&h.t, &g_cap_enc, NULL);
+    cap_tex_enc(&h.t, "texture contents");
     cap_buf c = {0}; cap_buf_put(&c, &h, sizeof h); cap_buf_put(&c, subs, nsub * sizeof *subs);
     uint64_t total = 0; for (uint32_t i = 0; i < nsub; i++) total += subs[i].bytes;
     cap_buf_put(&c, b.contents, (size_t)total);
@@ -291,7 +305,7 @@ static void cap_registries(uint32_t submit) {   // the entries that differ from 
         cap_sreg e = {i, 0, g_sreg[i]}; g_cap_sreg0[i] = g_sreg[i]; g_cap_sreg0_ok[i] = 1; cap_buf_put(&sb, &e, sizeof e);
     }
     os_unfair_lock_unlock(&g_rmu);
-    for (size_t o = 0; o < tb.n; o += sizeof(cap_treg)) { cap_treg *e = (cap_treg *)(tb.p + o); if (e->ok) cap_tex_fields(&e->t, &g_cap_enc, NULL); }
+    for (size_t o = 0; o < tb.n; o += sizeof(cap_treg)) { cap_treg *e = (cap_treg *)(tb.p + o); if (e->ok) { char w[32]; snprintf(w, sizeof w, "texture registry entry %d", e->tid); cap_tex_enc(&e->t, w); } }
     for (int i = 0; i < nreads; i++) cap_tex_read(&reads[i], 0);   // outside the registry lock: q_cb and the readback take other locks
     free(reads);
     if (tb.n) cap_put(&g_cap_w, CAP_TREG, submit, tb.p, tb.n, 1);

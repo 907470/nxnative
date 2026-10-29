@@ -249,3 +249,5 @@ void mtl_reg_samp(int id, const samp_par *p);
 void mtl_prog_release(prog_t *p);
 // New serial (> 0, globally increasing)
 uint64_t nvn_new_serial(void);
+// Serials handed out from now on are above s (dm/gfx/tests/nvn_replay.m: the objects of a capture keep the live run's serials)
+void nvn_serial_floor(uint64_t s);

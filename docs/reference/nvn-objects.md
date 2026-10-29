@@ -123,6 +123,13 @@ The game may also write into an NVN object directly, without an NVN call, throug
 - **Fix:** dead serials go to a 512-entry table (`tex_put`, `g_ghost`; the memory line's `finalized textures still referenced`).
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (the HUD captures, the 640×360 buffers; found while fixing GitHub issue #9).
 
+### A replay's own objects take serials above a capture's
+
+- **Symptom:** `nvn_replay` aborts on a game's capture with `-[NvProg width]: unrecognized selector` (from `rt_dims`) or `-[NvProg mipmapLevelCount]`: a render target resolves to a program.
+- **Cause:** a capture's textures and programs keep the live run's serials, while the replay layer's own objects (the combined program `bind_stages` makes when a game binds its shader stages from separate programs) took theirs from the replayer's counter, which starts at 1. Textures and programs share the serial table (`tex_get`, `serial_put`), so a combined program could take an early texture's serial and replace it there.
+- **Fix:** `nvn_replay` raises the counter to 2^61 before it loads a capture (`nvn_serial_floor`); a live run's serials stay far below that, and external textures take 2^62 and up. `check_t_capture_live` binds two programs to separate stages to cover it.
+- **Found on:** [Pokemon Scarlet](../../dm/games/0100A3D008C5C000/README.md) (frame 3000 of its regression route).
+
 ## Command memory
 
 ### Host-lent command memory segments

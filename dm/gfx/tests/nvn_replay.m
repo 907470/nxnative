@@ -218,6 +218,10 @@ int main(int argc, char **argv) { @autoreleasepool {
         return worst;
     }
     uint64_t tl0 = now_ns();
+    // The capture's textures and programs keep the live run's serials, and the replay layer's own objects (the per-stage combined programs of bind_stages) take theirs from
+    // the same counter and the same serial table: counted from 1 here, a combined program took a captured texture's serial, and that texture resolved to the program
+    // (Pokemon Scarlet: -[NvProg width] in rt_dims). Serials of a live run stay far below 2^61 (external textures take 2^62 and up)
+    nvn_serial_floor(1ull << 61);
     cap_reader rd; int lr = cap_load(&rd, path);
     if (lr <= 0) RFAIL("%s: %s", path, lr < 0 ? "not a capture of format 1" : "cannot read");
     for (;;) { cap_chunk c; uint8_t *d; int r = cap_next(&rd, &c, &d); if (r < 0) RFAIL("%s: corrupt chunk at byte %zu", path, rd.pos); if (!r) break;
