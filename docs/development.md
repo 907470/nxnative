@@ -126,6 +126,8 @@ do not allow growth.
 `scripts/bug_report.py` (`-h`) collects the logs, versions and settings a bug report needs into one zip ([CONTRIBUTING.md](../CONTRIBUTING.md#reporting-a-problem)); it reads an allow-list of text files only.
 For a Mac app, it reads the name, title ID and game version from `Info.plist`, lists the chain folders in `Contents/Resources/msl`, and includes both the player's and the bundle's `env.txt`. Recorded `DMCommit` and `DMChain` values take precedence; an app without a commit stamp reports its commit as unknown. The collector's checkout and chain are labeled separately. An NSP build lists available chain folders under `shader/cache` (Mac), `shader/ios` (iOS) and `shader`; old cached folders do not identify the chain that ran. The 4 MB file limit and 20 MB bundle limit include `report.md` and truncation markers; space for the report is reserved before logs are collected. Explicit `.keys` inputs are refused.
 
+`scripts/clean_metal_cache.py` (`-h`, `--dry-run`) frees the internal disk of the build folders Metal's pipeline archive compiler leaves in `getconf DARWIN_USER_CACHE_DIR`/`com.apple.gpuarchiver`, up to about 127 MB for each archive flush of a Mac run, which the host cannot remove itself ([Metal's build folders left by pipeline archive flushes](reference/shaders.md#metals-build-folders-left-by-pipeline-archive-flushes)). It removes only folders idle for an hour and older than every running `dmhost`; `scripts/regress.py` runs it too.
+
 `.github/workflows/fuzz.yml` fuzzes the Python parsers of files a player
 supplies, nightly and by hand (never on pull requests): the RomFS image reader
 (`romfs.py`), the control data (`nacp.py`), the NSO loader, the shader
