@@ -1586,7 +1586,7 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); snap_dra
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[131];
+static int g_red_once[132];
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
 // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
@@ -1786,6 +1786,57 @@ static int pkg_edges_clean(NvPkg *pk, const tex_t *t) {   // the covered pages w
     for (int i = 0; i < 2; i++) if (pk->edge_n[i] && memcmp(pk->edge[i], (const void *)r[i][0], pk->edge_n[i])) return 0;
     pk->stamp = st; g_pkg_edge_skips++;
     return 1;
+}
+// What a render pass drew, read back into the storage (rt_mirror_flush), is already the content of the host texture it was read from: that write is not a change to upload. The handler
+// takes a stamp, protects the storage again once it has written it and keeps the texture's bytes in its edge pages (pkg_absorb_note); at the next resolution the texture keeps its host
+// texture when that is still the one read back, no page wholly inside it was written since and its edge bytes are unchanged (pkg_absorb_take), as pkg_edges_clean judges neighbours'
+// writes. Tears of the Kingdom draws into four CPU-written targets (256x256, 192x192, 96x96 and 500x400) every frame, one of them loading its old content: re-uploaded after every
+// readback, 31,249 uploads in 200 s where there had been 19. Its 192x192 and 96x96 ones share a host page, so the readback of one dirtied the other
+// Until the readback lands, the storage is being written with what the host texture already holds: the texture keeps it rather than uploading the half-written storage (pkg_absorb_pending)
+static pthread_mutex_t g_abs_mu = PTHREAD_MUTEX_INITIALIZER; static struct { uint64_t serial, stamp; void *tex; uint8_t *edge[2]; uint32_t edge_n[2]; } g_abs[16]; static _Atomic int g_nabs;
+static struct { uint64_t serial; int n; } g_absp[16]; static _Atomic int g_nabsp;   // the counts are read without the lock first (tex_mtl_)
+static void pkg_absorb_pending(uint64_t serial, int d) {
+    pthread_mutex_lock(&g_abs_mu);
+    int i = 0; while (i < g_nabsp && g_absp[i].serial != serial) i++;
+    if (i == g_nabsp && d > 0 && g_nabsp < (int)(sizeof g_absp / sizeof g_absp[0])) { g_absp[i].serial = serial; g_absp[i].n = 0; g_nabsp++; }
+    if (i < g_nabsp && !(g_absp[i].n += d)) g_absp[i] = g_absp[--g_nabsp];
+    pthread_mutex_unlock(&g_abs_mu);
+}
+static int pkg_absorb_waits(uint64_t serial) {
+    pthread_mutex_lock(&g_abs_mu); int r = 0;
+    for (int i = 0; i < g_nabsp && !r; i++) r = g_absp[i].serial == serial;
+    pthread_mutex_unlock(&g_abs_mu); return r;
+}
+static void abs_free(int i) { CFRelease(g_abs[i].tex); free(g_abs[i].edge[0]); free(g_abs[i].edge[1]); }   // only this reference: the texture itself lives on
+static void pkg_absorb_note(const tex_t *t, void *tex) {   // right after the readback was written into the storage; tex: retained, released here or by pkg_absorb_take
+    uint64_t st = nvn_dirty_now(); nvn_dirty_protect(t->mem, t->L.size);   // stamp, protect, then read (as pkg_upload)
+    uintptr_t r[2][2], ia, ie; pkg_edge_ranges(t, r, &ia, &ie);
+    uint8_t *edge[2] = {0}; uint32_t edge_n[2] = {0};
+    for (int k = 0; k < 2; k++) if (r[k][1] > r[k][0]) { edge_n[k] = (uint32_t)(r[k][1] - r[k][0]); edge[k] = malloc(edge_n[k]); memcpy(edge[k], (const void *)r[k][0], edge_n[k]); }
+    pthread_mutex_lock(&g_abs_mu);
+    int i = 0; while (i < g_nabs && g_abs[i].serial != t->serial) i++;
+    if (i < g_nabs) abs_free(i);
+    else if (g_nabs < (int)(sizeof g_abs / sizeof g_abs[0])) g_nabs++;
+    else { pthread_mutex_unlock(&g_abs_mu); CFRelease(tex); free(edge[0]); free(edge[1]); return; }   // full: that one is uploaded again, as before
+    g_abs[i].serial = t->serial; g_abs[i].stamp = st; g_abs[i].tex = tex;
+    for (int k = 0; k < 2; k++) { g_abs[i].edge[k] = edge[k]; g_abs[i].edge_n[k] = edge_n[k]; }
+    pthread_mutex_unlock(&g_abs_mu);
+}
+static void pkg_absorb_take(NvPkg *pk, const tex_t *t) {
+    pthread_mutex_lock(&g_abs_mu);
+    int i = 0; while (i < g_nabs && g_abs[i].serial != t->serial) i++;
+    if (i == g_nabs) { pthread_mutex_unlock(&g_abs_mu); return; }
+    typeof(g_abs[0]) e = g_abs[i]; g_abs[i] = g_abs[--g_nabs];
+    pthread_mutex_unlock(&g_abs_mu);
+    id tex = CFBridgingRelease(e.tex);   // ARC drops this reference on return
+    uintptr_t r[2][2], ia, ie; pkg_edge_ranges(t, r, &ia, &ie);
+    int ok = tex == pk->tex && pk->span && !pk->sparse && !(ie > ia && nvn_dirty_since_span(pk->span, (const void *)ia, ie - ia, e.stamp));
+    for (int k = 0; k < 2 && ok; k++) ok = e.edge_n[k] == (r[k][1] > r[k][0] ? r[k][1] - r[k][0] : 0) && (!e.edge_n[k] || !memcmp(e.edge[k], (const void *)r[k][0], e.edge_n[k]));
+    if (ok) {
+        pk->stamp = pk->seen = e.stamp; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
+        for (int k = 0; k < 2; k++) { free(pk->edge[k]); pk->edge[k] = e.edge[k]; pk->edge_n[k] = e.edge_n[k]; e.edge[k] = NULL; }   // the bytes as written: a neighbour's write in an edge page is judged by them (pkg_edges_clean)
+    }
+    free(e.edge[0]); free(e.edge[1]);
 }
 // Usage an NVN image takes: shader writes, and for R32Uint / R32Sint the shader-atomic usage too, since Metal runs texture atomics only on such textures (dummy_img_atomic) and NVN does
 // not say which images a shader will use atomically
@@ -2127,15 +2178,18 @@ static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image,
     g_up_blits[g_nup_blits++] = (up_blit){src, off, row, image, size, dst, slice, level};
 }
 
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse);
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep);
 static int g_direct_upload_on = -1; static uint64_t g_direct_uploads, g_direct_dispatches;
 static int direct_upload_on(void) { if (g_direct_upload_on < 0) { const char *e=getenv("DM_NVN_DIRECT_UPLOAD"); g_direct_upload_on=!e||atoi(e); } return g_direct_upload_on; }
 int nvn_host_readable(uint64_t a, uint64_t n);   // hle_nvn.c: guest memory and sparse pools
 int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n); int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n);
-static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse) {   // reuse: a texture of the same description, idle on the GPU, to upload into instead of a new one
+// reuse: a texture of the same description, idle on the GPU, to upload into instead of a new one; keep: usage the texture it replaces was upgraded to (tex_upgrade), which the new one
+// is made with: a texture drawn into and re-uploaded (a CPU write into one the game renders into) was made without render-target use again and upgraded at its next attachment, a
+// second texture and a copy of every level for each re-upload, and its spare (of other usage) was never reused
+static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    id<MTLTexture> r = pkg_upload_(t, stamp, reuse);
+    id<MTLTexture> r = pkg_upload_(t, stamp, reuse, keep);
     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
     return r;
@@ -2186,9 +2240,10 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
         for (size_t i = 0; i < wb / 2; i++) q[i] = (uint16_t)((q[i] & ~m) | (q[i] & 31u) << shift | (q[i] >> shift & 31u));
     }
 }
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse) {
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep) {
     MTLTextureDescriptor *d = tex_desc(t, 1);
     if (!d) return nil;
+    d.usage |= keep & (MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
     int rb_shift = rb_packed_shift(t->d.format);   // the RGB565 family is repacked into Metal's order on the CPU (rb_packed_shift)
     int direct = !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
@@ -2382,7 +2437,7 @@ static int tex_init_fill(const tex_t *t, id<MTLTexture> mt) {
     static int flush_fill = -1; if (flush_fill < 0) { const char *e = getenv("DM_NVN_FLUSH_FILL"); flush_fill = !e || atoi(e) != 0; }
     if (!no_cpu && !uncached && (!flush_fill || !nvn_flushed(t->mem, t->L.size))) return 0;
     if (!atomic_load(&g_sub_thread_set) || !on_sub_thread() || !mem_any(t->mem, t->L.size)) return 0;   // the upload batch belongs to the submit thread
-    if (pkg_upload(t, NULL, mt) != mt) return 0;
+    if (pkg_upload(t, NULL, mt, 0) != mt) return 0;
     int why = no_cpu ? 0 : uncached ? 1 : 2;
     static uint64_t n[3]; if (n[why]++ < 4) MLOG("initial content: ser=%llu %ux%ux%u format %#x filled from its storage, %s (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format,
                                                  (const char *[]){"a CPU_NO_ACCESS pool's", "a CPU_UNCACHED pool's", "flushed by the CPU before its first use"}[why], (unsigned long long)n[why]);
@@ -2572,6 +2627,8 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (packaged) {
         NvPkg *pk = [have isKindOfClass:[NvPkg class]] ? have : nil;   // resolved as GPU-only before the CPU wrote it: dropped and rebuilt as packaged
         if (pk) {   // Already uploaded: check the covered pages only if there has been a guest write since the last check
+            if (g_nabs) pkg_absorb_take(pk, t);
+            if (g_nabsp && pkg_absorb_waits(t->serial)) return pk->view ? pk->view : pk->tex;
             uint64_t now = nvn_dirty_now();
             int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
             int clean = tracked && (now == pk->seen || !nvn_dirty_since_span(pk->span, t->mem, t->L.size, pk->stamp));
@@ -2588,7 +2645,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             // when the GPU is done with it (see NvPkg), else a new one; the old one becomes the spare (pkg_upload_ made nt resident)
             id<MTLTexture> reuse = nil;
             if (pk->spare) { pthread_mutex_lock(&g_mu); uint64_t done = g_done; pthread_mutex_unlock(&g_mu); if (pk->spare_fence <= done && pk->spare.usage == pk->tex.usage) reuse = pk->spare; }
-            uint64_t st, vg = nvn_sparse_gen(); id<MTLTexture> nt = pkg_upload(t, &st, reuse);
+            uint64_t st, vg = nvn_sparse_gen(); id<MTLTexture> nt = pkg_upload(t, &st, reuse, pk->tex.usage);
             if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt;
                 if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired as before
                 if (pk->sparse) sparse_view(pk, t);
@@ -2598,7 +2655,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         }
         pk = [NvPkg new];
         pk->sparse = t->pool && nvn_sparse_pool(t->pool); pk->vgen = pk->vseen = nvn_sparse_gen();
-        pk->tex = pkg_upload(t, &pk->stamp, nil);
+        pk->tex = pkg_upload(t, &pk->stamp, nil, 0);
         if (!pk->tex) return nil;
         pk->span = nvn_dirty_span(t->mem, t->L.size);
         pk->seen = pk->stamp; g_pkg_uploads++; if (dirtycheck() && !pk->sparse) pk->hash = full_hash(t->mem, t->L.size);   // "nothing written since" starts at the stamp: a write that faulted during the upload moved "now" past it
@@ -3119,6 +3176,36 @@ static void defer_fallback(void);
 static int g_el_w, g_el_h, g_el_draws; static char g_el_key[12];
 static int enc_label_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ENC_LABEL"); v = e && atoi(e); } return v; }
 static int g_nbcrt; static void bcrt_flush(void);   // shadows of block-compressed render targets used by the open pass (see bcrt_attach)
+// A pass that draws into a texture the host uploads from its storage (tex_storage_dst) writes that storage on the hardware, as a GPU copy does (mirror_readback): what the pass drew is
+// read back into the storage when it ends, so that a later upload from the storage, or the CPU reading or copying it, carries the drawing. Tears of the Kingdom draws the normal maps of
+// its terrain tiles (260x260 RG8, 9 levels, in a CPU-cached pool) after a flush over their storage made them CPU-written. Its resource defragmentation (main+0x5bc988) later moves each
+// tile with memcpy and re-creates the texture at the new address, which uploaded the zeros the storage held: a tile's grass got no length and its ground no light (dark, bare meadows a
+// few seconds after loading)
+static struct { tex_t t; void *tex; unsigned level, slice, n; int att; } g_rtm[8]; static int g_nrtm;   // n: the layers the pass draws from slice on; att: the colour slot
+static int tex_storage_dst(const tex_t *t);
+static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, unsigned layer0, const NVNcopyRegion *r, const char *from, int absorb);
+static void rt_mirror_add(const tex_t *t, id<MTLTexture> mt, NSUInteger level, NSUInteger slice, int att) {
+    if (!mt || t->d.target == NVN_TEXTURE_TARGET_3D || !tex_storage_dst(t)) return;
+    for (int i = 0; i < g_nrtm; i++) if (g_rtm[i].t.serial == t->serial && g_rtm[i].level == level && g_rtm[i].slice == slice) return;
+    if (g_nrtm == (int)(sizeof g_rtm / sizeof g_rtm[0])) { RED_ONCE(131, "more than %d storage-backed render targets in one pass: the rest are not read back into their storage", g_nrtm); return; }
+    g_rtm[g_nrtm++] = (typeof(g_rtm[0])){*t, (void *)CFBridgingRetain(mt), (unsigned)level, (unsigned)slice, 1, att};
+}
+// Once the pass's layers are known: a layered or slice-merged pass (renderTargetArrayLength) draws into that many layers of each attachment from its attached slice on, all read back
+static void rt_mirror_layers(MTL4RenderPassDescriptor *pd) {
+    for (int i = 0; i < g_nrtm; i++) { MTLRenderPassColorAttachmentDescriptor *c = pd.colorAttachments[g_rtm[i].att];
+        g_rtm[i].slice = (unsigned)c.slice; g_rtm[i].n = pd.renderTargetArrayLength > 1 ? (unsigned)pd.renderTargetArrayLength : 1; }
+}
+// After the pass has ended. The readbacks open the copy encoder, which is closed again: callers of rp_end may open an encoder of their own next and rely on none being open
+// (with it left open, Tears of the Kingdom stopped presenting on loading its opening at frame 1983)
+static void rt_mirror_flush(void) {
+    int n = g_nrtm; g_nrtm = 0;
+    for (int i = 0; i < n; i++) {
+        id<MTLTexture> mt = CFBridgingRelease(g_rtm[i].tex);
+        NVNcopyRegion r = {0, 0, 0, (int)MAX(mt.width >> g_rtm[i].level, 1u), (int)MAX(mt.height >> g_rtm[i].level, 1u), (int)g_rtm[i].n};
+        mirror_readback(&g_rtm[i].t, mt, g_rtm[i].level, g_rtm[i].slice, &r, "render", 1);
+    }
+    if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+}
 static void rp_end(void) { if (g_enc) { AP_B;
     if (enc_label_on()) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
         [(id)g_enc setLabel:[NSString stringWithFormat:@"p%02llu %dx%d %s d%d", (unsigned long long)(g_stat_pass - base), g_el_w, g_el_h, g_el_key[0] ? g_el_key : "-", g_el_draws]]; }
@@ -3129,6 +3216,7 @@ static void rp_end(void) { if (g_enc) { AP_B;
     zskip_commit_clears(); g_enc = nil; g_enc_geo_nocolor = 0; g_rt_merged = 0; g_sm_pass = 0; g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); ms_after(); if (g_lp.count) lp_finish(); fz_end();
     if (g_nubd && g_nubd >= ubd_lazy()) ubd_flush();   // the inline updates deferred in this pass, in order (see mtl_sub_update); across passes they wait for the next copy or dispatch (blit_raw)
     if (g_nbcrt) bcrt_flush();   // blocks drawn into shadows go back into their compressed textures
+    if (g_nrtm) rt_mirror_flush();
 #ifdef NVN_RT_RANGE_TEST
     rr_finish(ranged);
 #endif
@@ -3232,7 +3320,11 @@ static int rt_dup_slot(const p_set_rt *r, int i) {
     return 0;
 }
 static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const view_t *v, int has_v) {
-    id<MTLTexture> base = tex_mtl(t); a.texture = base;
+    id<MTLTexture> base = tex_mtl(t);
+    // A texture made without render-target use (packaged or CPU-written, uploaded from its storage) drawn into: give it that use, as a clear of one does (clear_tex). Metal's validation
+    // stops at such an attachment; without it Tears of the Kingdom drew its terrain normal maps into textures made for reading only
+    if (base && !(base.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(base.pixelFormat) && base.sampleCount == 1) base = tex_upgrade(t, base, MTLTextureUsageRenderTarget, base.pixelFormat);
+    a.texture = base;
     if (has_v && v->set_levels) a.level = v->base_level;
     if (has_v && v->set_layers) { if (t->d.target == 2) a.depthPlane = v->min_layer; else a.slice = v->min_layer; }
     if (base && mtl_fmt_block(base.pixelFormat)) { if (!bcrt_attach(a, base, v, has_v)) { rt_view_fmt(base, v, has_v); a.texture = nil; } return; }   // compressed formats: a shadow or nothing (see rt_view_fmt)
@@ -3297,6 +3389,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         if (g_xv_n) { xv_ent *xe = xv_find(R.rt.color[i]->serial, (uint32_t)pd.colorAttachments[i].level, (uint32_t)pd.colorAttachments[i].slice);
             if (xe && (xe->state == XV_INVALID || xe->state == XV_PROBE)) { if (pd.colorAttachments[i].loadAction == MTLLoadActionLoad) { xv_ent copy = *xe; xv_violation(&copy, "old content loaded as an attachment"); } else xv_good(xe); } }
         pd.colorAttachments[i].storeAction = MTLStoreActionStore;
+        rt_mirror_add(R.rt.color[i], pd.colorAttachments[i].texture, pd.colorAttachments[i].level, pd.colorAttachments[i].slice, i);
     }
     if (g_sm_plan.on && !clear_only && pd.colorAttachments[0].texture && !R.rt.depth) {   // slice-merged pass (see g_sm_plan): the attachment holds every layer the draws reach
         MTLRenderPassColorAttachmentDescriptor *c = pd.colorAttachments[0];
@@ -3445,6 +3538,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         if (pd.depthAttachment.texture) { id<MTLTexture> t = pd.depthAttachment.texture; NSUInteger have = t.arrayLength * (t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? 6 : 1) - pd.depthAttachment.slice; if (have < nl) nl = have; }
         if (nl != NSUIntegerMax && nl > 1) { pd.renderTargetArrayLength = nl; PD("L %llu layered pass: %lu layers", g_stat_pass + 1, (unsigned long)nl); }
     }
+    if (g_nrtm) rt_mirror_layers(pd);
     pg_render(pd, (NSUInteger)R.rt.n);
     { void td_note(id pd, NSUInteger nc); td_note(pd, (NSUInteger)R.rt.n);
       void ts_note(id pd, NSUInteger nc); ts_note(pd, (NSUInteger)R.rt.n);
@@ -9677,14 +9771,14 @@ static void mirror_note(int rc, const tex_t *t, unsigned level, const char *from
 // A source the GPU wrote has no content in guest memory to mirror on the CPU: the destination region is read back from the host texture after the copy, on the GPU, into a shared buffer, and
 // written into the storage when the submission completes (a post-op, run before the fence is published, so the game cannot have released the pool yet; it runs after any upload of the
 // texture encoded before it, so the pages it dirties are carried by the next one). The texture record is copied: the game may finalize the object once it has waited
-typedef struct { tex_t t; unsigned level, layer0; NVNcopyRegion r; size_t row, img; void *buf; int shift; } mirror_rb;   // buf: the readback buffer, retained for the handler; shift: rb_copy_shift
+typedef struct { tex_t t; unsigned level, layer0; NVNcopyRegion r; size_t row, img; void *buf, *src; int shift; } mirror_rb;   // buf: the readback buffer, retained for the handler; src: a render pass's host tex; shift: rb_copy_shift
 static size_t mtl_pf_block_bytes(MTLPixelFormat pf) {   // bytes per texel, or per block of a compressed format; 0 when not known
     int bb = bc_block_bytes(pf); if (bb) return (size_t)bb;
     if (pf >= MTLPixelFormatASTC_4x4_sRGB && pf <= MTLPixelFormatASTC_12x12_HDR) return 16;
     if (pf >= MTLPixelFormatEAC_R11Unorm && pf <= MTLPixelFormatETC2_RGB8A1_sRGB) return pf == MTLPixelFormatEAC_RG11Unorm || pf == MTLPixelFormatEAC_RG11Snorm || pf == MTLPixelFormatEAC_RGBA8 || pf == MTLPixelFormatEAC_RGBA8_sRGB ? 16 : 8;
     return mtl_pf_bytes(pf);
 }
-static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, unsigned layer0, const NVNcopyRegion *r, const char *from) {
+static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, unsigned layer0, const NVNcopyRegion *r, const char *from, int absorb) {   // absorb: a render pass's readback, which the texture takes as its own (pkg_absorb_note)
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh), nz = r->depth ? r->depth : 1;
     if (!bpb || r->width <= 0 || r->height <= 0 || d.sampleCount > 1 || mtl_fmt_depth(d.pixelFormat) || d.pixelFormat == MTLPixelFormatStencil8 || mtl_pf_block_bytes(d.pixelFormat) != (size_t)bpb) { mirror_note(-1, t, level, from, 1); return; }
     size_t row = (size_t)((r->width + bw - 1) / bw) * bpb, img = row * (size_t)((r->height + bh - 1) / bh);
@@ -9693,16 +9787,20 @@ static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, un
     res_add(b);
     id<MTL4ComputeCommandEncoder> e = blit();
     for (int z = 0; z < nz; z++) enc_b_copy_texture_buffer(e, d, layer0 + r->zoffset + z, level, MTLOriginMake(r->xoffset, r->yoffset, 0), MTLSizeMake(r->width, r->height, 1), b, (size_t)z * img, row, img);
-    mirror_rb *m = malloc(sizeof *m); *m = (mirror_rb){*t, level, layer0, *r, row, img, (void *)CFBridgingRetain(b), rb_copy_shift(t, d)};
+    mirror_rb *m = malloc(sizeof *m); *m = (mirror_rb){*t, level, layer0, *r, row, img, (void *)CFBridgingRetain(b), absorb ? (void *)CFBridgingRetain(d.parentTexture ? d.parentTexture : d) : NULL, rb_copy_shift(t, d)};
     post((post_op){4, NULL, 0, 0, 0, 0, m, 0});
     mrb_note(t->serial, 1);
+    if (m->src) pkg_absorb_pending(t->serial, 1);
     defer_obj_release(b);
     mirror_note(0, t, level, from, 1);
 }
 static void mirror_rb_land(void *p) {   // the submission's completion handler
     mirror_rb *m = p; id<MTLBuffer> b = CFBridgingRelease(m->buf);
     if (m->shift) { int bw, bh; nvn_fmt_bpb(m->t.d.format, &bw, &bh); rb_swap_rows(b.contents, m->row, (size_t)((m->r.height + bh - 1) / bh), (size_t)(m->r.depth ? m->r.depth : 1), m->row, m->img, m->shift); }   // into the guest's order
-    if (nvn_tex_mirror_b2t(&m->t, m->level, m->layer0, &m->r, b.contents, m->row, m->img)) { static int n; if (n++ < 4) MLOG("[RED] GPU copy read back into the storage of texture ser=%llu level %u: not written", (unsigned long long)m->t.serial, m->level); }
+    if (nvn_tex_mirror_b2t(&m->t, m->level, m->layer0, &m->r, b.contents, m->row, m->img)) { static int n; if (n++ < 4) MLOG("[RED] GPU copy read back into the storage of texture ser=%llu level %u: not written", (unsigned long long)m->t.serial, m->level);
+        if (m->src) CFRelease(m->src); }
+    else if (m->src) pkg_absorb_note(&m->t, m->src);
+    if (m->src) pkg_absorb_pending(m->t.serial, -1);   // after the note: the next resolution finds it
     mrb_note(m->t.serial, -1);
     free(m);
 }
@@ -9742,7 +9840,7 @@ static void copy_b2t(const p_copy_b2t *c) {
     else
         for (int z = 0; z < nz; z++)
             enc_b_copy_buffer_texture(b, sb, mo + z * img, row, img, MTLSizeMake(c->r.width, c->r.height, 1), t, layer0 + c->r.zoffset + z, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, 0));
-    if (rb) mirror_readback(c->tex, t, level, layer0, &c->r, "buffer");
+    if (rb) mirror_readback(c->tex, t, level, layer0, &c->r, "buffer", 0);
 }
 
 // Texture copies a blit cannot do -- a format change, a scaled region or a mirrored one (MIRROR_X / MIRROR_Y) (Link's Awakening converts its 1408x792 RG11B10F scene to RGBA16F every frame; Super Mario 3D World scales 1920x1080 to 1280x720
@@ -9970,7 +10068,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         && (c->sr.depth ? c->sr.depth : 1) == (c->dr.depth ? c->dr.depth : 1)
         && !(c->flags & ~(NVN_COPY_FLAGS_ENGINE_2D_BIT | NVN_COPY_FLAGS_LINEAR_FILTER_BIT | NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT))
         && copy_t2t_draw(s, d, sl, sz0, dl, dz0, &c->sr, &c->dr, !!(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT), c->flags)) {   // format change / scaling / mirroring: draw it (see copy_t2t_draw)
-        if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture");
+        if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture", 0);
         return;
     }
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
@@ -9985,7 +10083,7 @@ static void copy_t2t(const p_copy_t2t *c) {
     else
         for (int z = 0; z < nz; z++)
             enc_b_copy_texture(b, s, sz0 + c->sr.zoffset + z, sl, MTLOriginMake(c->sr.xoffset, c->sr.yoffset, 0), MTLSizeMake(c->sr.width, c->sr.height, 1), d, dz0 + c->dr.zoffset + z, dl, MTLOriginMake(c->dr.xoffset, c->dr.yoffset, 0));
-    if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture");
+    if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture", 0);
     // Diagnostic DM_NVN_T2T_TRACE=WxH:file: after each copy into an RGBA16F texture of that size, copy the result once more into a trace buffer on the GPU timeline (frame numbers kept on the CPU side); after 240 copies write the file
     { static int on = -1; static uint32_t tw, th; static const char *tf; static id<MTLBuffer> tb; static int tn; static uint64_t tfr[240], from;
       if (on < 0) { const char *e = getenv("DM_NVN_T2T_TRACE"), *fe = getenv("DM_NVN_T2T_FROM"); on = e && sscanf(e, "%ux%u", &tw, &th) == 2 && (tf = strchr(e, ':')) && *++tf; from = fe ? strtoull(fe, NULL, 10) : 0; }
