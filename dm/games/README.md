@@ -126,6 +126,7 @@ One row per profile; the notes are each profile's `README.md`.
 | [STEINS;GATE RE:BOOT](01008BC024FDE000/README.md) | `01008BC024FDE000` | 1.0.3 | 20.5.17 | M2's ADV engine | NVN |
 | [Stardew Valley](0100E65002BB8000/README.md) | `0100E65002BB8000` | 1.6.15.13 | 20.5.27 | MonoGame (C# → C++ by BRUTE) | NVN |
 | [SteamWorld Heist II](010089C01E9CA000/README.md) | `010089C01E9CA000` | 1.5.1 | 17.5.6 | Thunderful's own engine (SteamWorld) | NVN |
+| [SteamWorld Heist: Ultimate Edition](010016100A186000/README.md) | `010016100A186000` | 2.2.1 | 4.5.0 | Image & Form's own engine (SteamWorld) | NVN |
 | [Super Mario 3D World + Bowser's Fury](010028600EBDA000/README.md) | `010028600EBDA000` | 1.2.2 | 10.4.0 | Nintendo EPD (sead / agl, NintendoWare) | NVN |
 | [Super Mario Bros. Wonder](010015100B514000/README.md) | `010015100B514000` | 1.2.1 (and 1.0.0) | 16.2.12 (1.0.0: 16.2.0) | Nintendo EPD (sead / agl) | NVN |
 | [Super Mario Galaxy](010099C022B96000/README.md) | `010099C022B96000` | 1.3.1 | 18.3.5 | NERD's Hagi Wii layer (recompiled PowerPC) | Vulkan |

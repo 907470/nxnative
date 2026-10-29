@@ -226,7 +226,7 @@ Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) wit
 </tr>
 <tr>
 <td align="center" valign="top" width="33%"><img src="docs/images/steamworld-heist-ii.jpg" width="256" alt="SteamWorld Heist II"><br><b><a href="dm/games/010089C01E9CA000/README.md">SteamWorld Heist II</a></b></td>
-<td></td>
+<td align="center" valign="top" width="33%"><img src="docs/images/steamworld-heist.jpg" width="256" alt="SteamWorld Heist: Ultimate Edition"><br><b><a href="dm/games/010016100A186000/README.md">SteamWorld Heist: Ultimate Edition</a></b></td>
 <td></td>
 </tr>
 </table>
