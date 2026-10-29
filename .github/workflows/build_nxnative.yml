@@ -17,7 +17,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14 # Apple Silicon M1 macOS runner
+    runs-on: macos-latest # Apple Silicon M1 macOS runner
 
     steps:
       - name: Checkout Repository
