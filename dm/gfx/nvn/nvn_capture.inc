@@ -5,7 +5,7 @@
 // in Metal that the frame can reach (registered or named by a record), and each submission's record bytes with pointers written as region offsets and object indices. Before
 // each later submit of the frame, the pool bytes that changed (GPU writes included) and the registry entries that changed. At the present: the presented texture's SHA-256,
 // read back the same way the replayer reads its own (cap_digest). Each capture step first waits for the GPU (mtl_finish), so what is read is what the next submit sees; that
-// changes the frame's timing, not what it renders. Unset, the hooks cost one load and a branch per submit and present.
+// changes the frame's timing, not what it renders. The pool bytes are copied last in each submit's step (cap_mem), as the live replay of the submit reads them. Unset, the hooks cost one load and a branch per submit and present.
 #include "nvn_capture.h"
 #include <crt_externs.h>
 
@@ -16,7 +16,7 @@ static uint32_t g_cap_submit;           // submits captured in the frame so far
 static uint64_t g_cap_presents;         // presents seen (the frame number DM_NVN_SHOT uses)
 static cap_writer g_cap_w;
 static uint64_t g_cap_t0, g_cap_ns, g_cap_unmapped, g_cap_segs, g_cap_tex_bytes, g_cap_tex_n, g_cap_tex_skip;
-typedef struct { uint64_t lo, size; uint32_t kind; uint64_t *hash; } cap_region;   // hash: one per 4 KiB block, for the changes before later submits
+typedef struct { uint64_t lo, size; uint32_t kind, pending; uint64_t *hash; } cap_region;   // hash: one per 4 KiB block, for the changes before later submits; pending: bytes not written yet
 static cap_region *g_cap_reg; static uint32_t g_cap_nreg;
 static nvn_hmap g_cap_tex = {.klen = sizeof(tex_t)}, g_cap_prog = {.klen = 16}, g_cap_dpol = {.klen = 8 + sizeof(dpool_t)}, g_cap_sync = {.klen = 8}, g_cap_pool = {.klen = 8 + sizeof(pool_t)};
 static nvn_hmap g_cap_seg = {.klen = 8}, g_cap_read = {.klen = 8};
@@ -51,22 +51,18 @@ static int cap_reg_find(uint64_t a) {   // the region holding address a (regions
     while (lo <= hi) { int m = (lo + hi) / 2; if (a < g_cap_reg[m].lo) hi = m - 1; else if (a >= g_cap_reg[m].lo + g_cap_reg[m].size) lo = m + 1; else return m; }
     return -1;
 }
-static void cap_reg_hash(cap_region *r) {
+static void cap_reg_hash(cap_region *r, const uint8_t *p) {   // p: the region's bytes (or the copy that was written)
     size_t nb = (size_t)((r->size + 4095) / 4096); r->hash = realloc(r->hash, nb * 8);
-    for (size_t b = 0; b < nb; b++) { uint64_t o = (uint64_t)b * 4096; r->hash[b] = cap_hash_block((const uint8_t *)(uintptr_t)r->lo + o, (size_t)MIN(4096, r->size - o)); }
+    for (size_t b = 0; b < nb; b++) { uint64_t o = (uint64_t)b * 4096; r->hash[b] = cap_hash_block(p + o, (size_t)MIN(4096, r->size - o)); }
 }
 // Regions are written once their index is fixed; a later region gets the next index, so the sorted order is kept in a separate index table
 static uint32_t *g_cap_rid; static uint32_t g_cap_nrid;   // g_cap_rid[sorted position] = region number in the file
-static int cap_reg_add(uint64_t lo, uint64_t size, uint32_t kind, uint32_t submit) {   // a new disjoint region; returns its sorted position
+static int cap_reg_add(uint64_t lo, uint64_t size, uint32_t kind) {   // a new disjoint region (its bytes are written by cap_mem); returns its sorted position
     int pos = 0; while (pos < (int)g_cap_nreg && g_cap_reg[pos].lo < lo) pos++;
     g_cap_reg = realloc(g_cap_reg, (g_cap_nreg + 1) * sizeof *g_cap_reg); g_cap_rid = realloc(g_cap_rid, (g_cap_nreg + 1) * sizeof *g_cap_rid);
     memmove(g_cap_reg + pos + 1, g_cap_reg + pos, (g_cap_nreg - pos) * sizeof *g_cap_reg); memmove(g_cap_rid + pos + 1, g_cap_rid + pos, (g_cap_nreg - pos) * sizeof *g_cap_rid);
-    g_cap_reg[pos] = (cap_region){lo, size, kind, NULL}; g_cap_rid[pos] = g_cap_nrid++; g_cap_nreg++;
-    uint32_t file_no = g_cap_rid[pos]; cap_region *r = &g_cap_reg[pos]; cap_regn hh = {file_no, r->kind, r->lo, r->size};
-    uint8_t *b = malloc(sizeof hh + r->size); if (!b) { cap_fail("out of memory for a region"); return pos; }
-    memcpy(b, &hh, sizeof hh); memcpy(b + sizeof hh, (const void *)(uintptr_t)r->lo, (size_t)r->size);
-    cap_put(&g_cap_w, CAP_REGN, submit, b, sizeof hh + r->size, 1); free(b);
-    cap_reg_hash(r);
+    g_cap_reg[pos] = (cap_region){lo, size, kind, 1, NULL}; g_cap_rid[pos] = g_cap_nrid++; g_cap_nreg++;
+    cap_reg_hash(&g_cap_reg[pos], (const uint8_t *)(uintptr_t)lo);   // the bytes now: cap_mem counts what changed before they were written
     return pos;
 }
 static uint32_t g_cap_cur_submit;
@@ -84,7 +80,7 @@ static int cap_enc_addr(void *ctx, uint64_t *field, uint64_t len, int writable) 
     if (i < 0 && len && len <= (1u << 20) && nvn_host_readable(v, len)) {   // memory outside the pools a record reads (deferred handles, event words): a region of its own
         for (uint32_t k = 0; k < g_cap_nreg; k++) if (g_cap_reg[k].lo < v + len && v < g_cap_reg[k].lo + g_cap_reg[k].size) { cap_fail("a record's memory straddles a region");
             MLOG("[RED] DM_NVN_CAPTURE: %#llx (%llu bytes) straddles region %#llx (%llu bytes): %s", (unsigned long long)v, (unsigned long long)len, (unsigned long long)g_cap_reg[k].lo, (unsigned long long)g_cap_reg[k].size, cap_where(field)); return 1; }
-        i = cap_reg_add(v, len, 1, g_cap_cur_submit);
+        i = cap_reg_add(v, len, 1);
     }
     if (i < 0) { if (g_cap_unmapped++ < 8) MLOG("[RED] DM_NVN_CAPTURE: a record names %#llx (%llu bytes), outside every pool: kept as it is (the replay resolves it as the live run does, to nothing): %s", (unsigned long long)v, (unsigned long long)len, cap_where(field)); return 1; }
     *field = cap_addr(g_cap_rid[i], v - g_cap_reg[i].lo);
@@ -294,9 +290,12 @@ static void cap_registries(uint32_t submit) {   // the entries that differ from 
     reads = malloc((size_t)MAX(g_ntreg, 1) * sizeof *reads);
     for (int i = 0; i < g_ntreg; i++) {
         treg_t *r = &g_treg[i], *o = &g_cap_treg0[i];
-        if (r->ok == o->ok && (!r->ok || (r->has_v == o->has_v && !memcmp(&r->t, &o->t, sizeof r->t) && (!r->has_v || !memcmp(&r->v, &o->v, sizeof r->v))))) continue;
-        cap_treg e = {i, (uint8_t)r->ok, (uint8_t)r->has_v, {0}, r->t, r->v}; o->ok = r->ok; o->has_v = r->has_v; o->t = r->t; o->v = r->v;
-        if (r->ok) reads[nreads++] = r->t;
+        if (r->ok == o->ok && (!r->ok || (r->gone == o->gone && r->has_v == o->has_v && !memcmp(&r->t, &o->t, sizeof r->t) && (!r->has_v || !memcmp(&r->v, &o->v, sizeof r->v))))) continue;
+        cap_treg e = {i, (uint8_t)r->ok, (uint8_t)r->has_v, (uint8_t)(r->ok && r->gone), 0, r->t, r->v}; o->ok = r->ok; o->gone = r->gone; o->has_v = r->has_v; o->t = r->t; o->v = r->v;
+        // An ID whose memory pool was finalized: the pool object is freed, and Pokemon Scarlet reuses the memory (its registry entries read a texture's bytes as their pool's
+        // address, size and mode). Nothing makes a texture from such an ID, so neither the pool nor the storage is captured
+        if (e.gone) e.t.pool = NULL, e.t.mem = NULL;
+        else if (r->ok) reads[nreads++] = r->t;
         cap_buf_put(&tb, &e, sizeof e);
     }
     if (g_cap_nsreg0 < g_nsreg) { g_cap_sreg0 = realloc(g_cap_sreg0, g_nsreg * sizeof *g_cap_sreg0); g_cap_sreg0_ok = realloc(g_cap_sreg0_ok, g_nsreg); memset(g_cap_sreg0_ok + g_cap_nsreg0, 0, g_nsreg - g_cap_nsreg0); g_cap_nsreg0 = g_nsreg; }
@@ -340,7 +339,7 @@ static void cap_pools(uint32_t submit) {   // regions for pools not covered yet 
         int k = cap_reg_find(lo);
         if (k < 0 || g_cap_reg[k].lo + g_cap_reg[k].size < hi) {
             if (k >= 0 || cap_reg_find(hi - 1) >= 0) cap_fail("a pool grew over an existing region during the frame");
-            else cap_reg_add(lo, hi - lo, 0, submit);
+            else cap_reg_add(lo, hi - lo, 0);
         }
         i = j;
     }
@@ -348,7 +347,26 @@ static void cap_pools(uint32_t submit) {   // regions for pools not covered yet 
     for (int i = 0; i < n; i++) { cap_padd a = {ps[i].lo, ps[i].hi - ps[i].lo}; cap_enc_addr(NULL, &a.mem, 0, 0); cap_buf_put(&b, &a, sizeof a); }
     cap_put(&g_cap_w, CAP_PADD, submit, b.p, b.n, 1); cap_buf_free(&b); free(ps);
 }
-static void cap_diffs(uint32_t submit) {   // the 4 KiB blocks of every region that changed since they were last written
+// The pool bytes, last in a submit's step: the texture readbacks and the records before it take seconds, the game's other threads run meanwhile, and the live replay of the
+// submit reads the pools as they are once the step ends. A new region is written whole (its bytes once, as they are then); of the others, the 4 KiB blocks that changed since
+// they were last written. The bytes of new regions that changed after the region was found are counted in the log (0 in Breath of the Wild's and Pokemon Scarlet's frames)
+static uint64_t cap_reg_write(uint32_t submit) {   // the new regions, whole; → their bytes that changed after they were found (what a copy at that point would have missed)
+    uint64_t moved = 0;
+    for (uint32_t i = 0; i < g_cap_nreg; i++) {
+        cap_region *r = &g_cap_reg[i]; if (!r->pending) continue;
+        size_t nb = (size_t)((r->size + 4095) / 4096);
+        for (size_t k = 0; k < nb; k++) { uint64_t o = (uint64_t)k * 4096; size_t len = (size_t)MIN(4096, r->size - o); if (cap_hash_block((const uint8_t *)(uintptr_t)r->lo + o, len) != r->hash[k]) moved += len; }
+        cap_regn hh = {g_cap_rid[i], r->kind, r->lo, r->size}; r->pending = 0;
+        uint8_t *b = malloc(sizeof hh + r->size); if (!b) { cap_fail("out of memory for a region"); continue; }
+        memcpy(b, &hh, sizeof hh); memcpy(b + sizeof hh, (const void *)(uintptr_t)r->lo, (size_t)r->size);
+        cap_reg_hash(r, b + sizeof hh);   // of the copy: a write after it is a change for the next diff
+        cap_put(&g_cap_w, CAP_REGN, submit, b, sizeof hh + r->size, 1); free(b);
+    }
+    return moved;
+}
+static void cap_mem(uint32_t submit) {
+    uint64_t moved = cap_reg_write(submit);
+    if (moved) MLOG("DM_NVN_CAPTURE: submit %u: %llu bytes of the pools changed while it was captured (written as they are at its end)", submit, (unsigned long long)moved);
     cap_buf b = {0};
     for (uint32_t i = 0; i < g_cap_nreg; i++) {
         cap_region *r = &g_cap_reg[i]; size_t nb = (size_t)((r->size + 4095) / 4096);
@@ -375,9 +393,27 @@ static void cap_flush_objs(uint32_t submit) {
     if (g_cap_kind.n) cap_put(&g_cap_w, CAP_TKND, submit, g_cap_kind.p, g_cap_kind.n, 1);
     g_cap_pobj.n = g_cap_tobj.n = g_cap_progb.n = g_cap_dpolb.n = g_cap_kind.n = 0;
 }
+// A capture step takes seconds to minutes on the thread that submits or presents, which may hold a time-constraint (real-time) policy declared for a few milliseconds a frame
+// (hle_nvn.c, set_time_constraint_comp). The kernel then lets it run in short slices only: Pokemon Scarlet's pool bytes took 1,175 s to compress where the same data takes 55 s,
+// and Breath of the Wild's 118 s where it now takes 29. The step runs under the standard policy, and the thread gets its own back after it
+typedef struct { int rt; thread_time_constraint_policy_data_t p; } cap_policy;
+static cap_policy cap_policy_standard(void) {
+    cap_policy c = {0}; thread_t th = pthread_mach_thread_np(pthread_self()); mach_msg_type_number_t n = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t dflt = 0;
+    if (thread_policy_get(th, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&c.p, &n, &dflt) == KERN_SUCCESS && !dflt) {
+        thread_standard_policy_data_t st = {0};
+        c.rt = thread_policy_set(th, THREAD_STANDARD_POLICY, (thread_policy_t)&st, THREAD_STANDARD_POLICY_COUNT) == KERN_SUCCESS;
+    }
+    return c;
+}
+static void cap_policy_restore(cap_policy c) { if (c.rt) thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&c.p, THREAD_TIME_CONSTRAINT_POLICY_COUNT); }
+static void cap_submit_step(int n, const uint64_t *h);
+static void cap_present_step(const tex_t *t, const int crop[4]);
 // Hook: nvnQueueSubmitCommands, under the submit lock, before the submission is replayed
 void nvn_cap_submit(int n, const uint64_t *h) {
     if (!nvn_cap_enabled() || g_cap_presents + 1 != (uint64_t)g_cap_frame) return;
+    cap_policy c = cap_policy_standard(); cap_submit_step(n, h); cap_policy_restore(c);
+}
+static void cap_submit_step(int n, const uint64_t *h) {
     uint64_t t0 = now_ns();
     mtl_finish();   // what the previous submissions wrote is in memory now: the pools and textures are read as this submit will see them
     g_cap_cur_submit = ++g_cap_submit;
@@ -385,14 +421,16 @@ void nvn_cap_submit(int n, const uint64_t *h) {
         if (!cap_open(&g_cap_w, g_cap_path)) { MLOG("[RED] DM_NVN_CAPTURE: cannot write %s: capture off", g_cap_path); g_cap_done = 1; return; }
         g_cap_active = 1; g_cap_t0 = t0;
         cap_head();
-    } else cap_diffs(g_cap_cur_submit);
+    }
     cap_pools(g_cap_cur_submit);
-    cap_registries(g_cap_cur_submit);
-    nvn_hm_clear(&g_cap_seg, NULL); g_cap_nseg = 0;
+    uint64_t t1 = now_ns(); cap_registries(g_cap_cur_submit);
+    uint64_t t2 = now_ns(); nvn_hm_clear(&g_cap_seg, NULL); g_cap_nseg = 0;
     uint32_t *top = malloc((size_t)MAX(n, 1) * 4);
     for (int i = 0; i < n; i++) top[i] = (uint32_t)cap_seg_get(h[i]);
     for (uint32_t i = 0; i < g_cap_nseg; i++) cap_seg_write(i);   // segments called or jumped to are queued while the earlier ones are written
     cap_flush_objs(g_cap_cur_submit);
+    uint64_t t3 = now_ns(); cap_mem(g_cap_cur_submit);
+    MLOG("DM_NVN_CAPTURE: submit %u: registries and their textures %.1f s, records and their textures %.1f s, pool bytes %.1f s", g_cap_cur_submit, (t2 - t1) / 1e9, (t3 - t2) / 1e9, (now_ns() - t3) / 1e9);
     if (g_cap_nsync) { uint32_t ns = g_cap_nsync; cap_put(&g_cap_w, CAP_SYNC, g_cap_cur_submit, &ns, 4, 0); }
     cap_buf s = {0}; uint32_t nn = (uint32_t)n; cap_buf_put(&s, &nn, 4); cap_buf_put(&s, top, (size_t)n * 4);
     cap_put(&g_cap_w, CAP_SUBM, g_cap_cur_submit, s.p, s.n, 0); cap_buf_free(&s); free(top);
@@ -427,10 +465,13 @@ void nvn_cap_present(const tex_t *t, const int crop[4]) {
         if (g_cap_presents >= (uint64_t)g_cap_frame && !g_cap_active) { MLOG("[RED] DM_NVN_CAPTURE: frame %d presented without a submit: nothing captured", g_cap_frame); g_cap_done = 1; }
         return;
     }
+    cap_policy c = cap_policy_standard(); cap_present_step(t, crop); cap_policy_restore(c);
+}
+static void cap_present_step(const tex_t *t, const int crop[4]) {
     uint64_t t0 = now_ns();
     cap_pres p = {0}; cap_buf px = {0}; char png[1100]; snprintf(png, sizeof png, "%s.live.png", g_cap_path);
     g_cap_cur_submit = g_cap_submit + 1; g_cap_no_read = 1;
-    if (t) { p.tex = cap_tex_obj(t); cap_flush_objs(g_cap_cur_submit); }
+    if (t) { p.tex = cap_tex_obj(t); cap_flush_objs(g_cap_cur_submit); cap_reg_write(g_cap_cur_submit); }
     if (crop) memcpy(p.crop, crop, sizeof p.crop);
     p.frame = (uint32_t)g_cap_frame;
     if (!t || !cap_digest(t, p.sha256, &p.bytes, &p.width, &p.height, &p.pixfmt, png, &px)) cap_fail("the presented texture could not be read back");

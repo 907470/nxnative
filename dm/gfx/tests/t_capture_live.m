@@ -1,8 +1,8 @@
 // DM_NVN_CAPTURE end to end on the GPU, without game files: two frames of synthetic records through the capture hooks, the second one captured; `make check_t_capture_live`
 // then replays the file with nvn_replay, which must give the same digest. The captured frame depends on everything a capture has to carry: a render target's content
 // from the frame before (texture readback), pool bytes the CPU wrote before the first submit and between the two submits (regions, block changes), a copy from a pool
-// into the target and a buffer fill (relocated addresses), a call into a second segment, a texture object outside the records, and a combined program the replay
-// layer makes for itself (its serial must not be a captured one).
+// into the target and a buffer fill (relocated addresses), a call into a second segment, a texture object outside the records, a combined program the replay
+// layer makes for itself (its serial must not be a captured one) and a registered texture whose memory pool was finalized.
 //   ./t_capture_live <capture path>
 #import <Foundation/Foundation.h>
 #define nvn_game_fps nvn_game_fps_mtl_default
@@ -53,6 +53,14 @@ int main(int argc, char **argv) { @autoreleasepool {
     { p_clear_color *c = emit(&f1, OP_CLEAR_COLOR, sizeof *c); *c = (p_clear_color){0, 0xf, {1, 0, 0, 1}}; }
     copy_block(&f1, &rt, (uint64_t)(uintptr_t)pool, 8, 8); emit(&f1, OP_END, 0);
     submit(f1.p); nvn_cap_present(&rt, NULL);
+    // a texture on a pool of its own, registered, then the pool finalized as nvnMemoryPoolFinalize does and the pool object's memory reused: the ID stays registered with its
+    // storage gone, and the capture must not read the dead pool object (Pokemon Scarlet: a texture's bytes there read as a sparse pool's mode, or as addresses outside every pool)
+    static pool_t p2; size_t p2sz = 64 << 10; uint8_t *mem2 = NULL; if (posix_memalign((void **)&mem2, (size_t)getpagesize(), p2sz)) return 2;
+    mtl_pool_add(mem2, p2sz); p2 = (pool_t){MAGIC('P', 'O', 'O', 'L'), 0, mem2, p2sz, NULL, 0};
+    tex_t t2 = {.magic = MAGIC('T', 'E', 'X', 0), .serial = nvn_new_serial(), .pool = &p2, .mem = mem2};
+    t2.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA8, .width = 16, .height = 16, .depth = 1, .levels = 1, .samples = 1};
+    nvn_tex_layout(&t2.d, &t2.L); mtl_tex_init(&t2); mtl_reg_tex(5, &t2, NULL);
+    mtl_pool_del(mem2); mtl_alias_drop_pool(&p2); p2 = (pool_t){0, 0x24924924, (uint8_t *)0x2492492492497f80ull, 0x2492492492497f80ull, NULL, 2};
     // frame 2: two submits; the CPU writes the pool before each, the second copy reads what was written between them
     for (int i = 0; i < 16 * 16; i++) { pool[0x10000 + 4 * i] = 200; pool[0x10000 + 4 * i + 1] = (uint8_t)(3 * i); pool[0x10000 + 4 * i + 2] = 90; pool[0x10000 + 4 * i + 3] = 255; }
     chain a = {{0}, 0};
@@ -71,6 +79,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     submit(b.p);
     nvn_cap_present(&rt, NULL);
     if (!g_cap_done || g_cap_failed) { fprintf(stderr, "FAIL: capture %s\n", g_cap_done ? "incomplete" : "not written"); return 1; }
+    if (g_cap_unmapped) { fprintf(stderr, "FAIL: %llu addresses outside every pool (the finalized pool's object read)\n", (unsigned long long)g_cap_unmapped); return 1; }
     if (*(uint32_t *)(pool + 0x30000) != 0x11223344) { fprintf(stderr, "FAIL: the called segment's buffer fill did not run\n"); return 1; }
     printf("t_capture_live: frame 2 captured to %s\n", argv[1]);
     return 0;
