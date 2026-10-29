@@ -10,6 +10,14 @@ on:
       gdrive_file_id:
         description: 'Google Drive File ID or Share URL of the game archive'
         required: true
+      device_type:
+        description: 'Target Device / Architecture'
+        required: true
+        default: 'iphone15_plus'
+        type: choice
+        options:
+          - iphone15_plus      # iPhone 15 Pro+, iPads, Macs (Official repo)
+          - iphone14pro_a16    # iPhone 14 Pro / A16 Bionic (Compatibility fork with BC-to-ASTC)
       separate_romfs:
         description: 'Separate ROMFS for large games (true/false)'
         required: false
@@ -23,6 +31,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
+          # Dynamically choose repository and branch based on your dropdown selection
+          repository: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'mianmuhammadse/nxnative' || 'seedds/nxnative' }}
+          ref: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'no-bc' || 'main' }}
           submodules: recursive
 
       - name: Set up Python
@@ -85,6 +96,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: compiled-nxnative-output
+          retention-days: 7
           path: |
             Games/**/*.ipa
             Games/**/*.json
