@@ -269,7 +269,7 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Symptom:** `CRASH sig=11 addr=0x794` in `-[AGXG16GFamilyRenderContext_mtlnext drawIndexedPrimitives:…]+0x50`, called from `draw_`, right after the log line `texture upgraded to allow format views` (Metal API validation reports nothing first).
 - **Cause:** `draw_` takes its render encoder from `rp_begin_ex`, then binds the program's arguments (`encode_args`). Binding a texture view of another format calls `tex_by_id`, which upgrades a texture made without `PixelFormatView` (`tex_upgrade`); the upgrade copies the old texture through `blit()`, which ends the render pass (`rp_end`). The draw then encoded on that ended encoder: the driver reads the context it released at end of encoding (`ldr x21, [x0, ivar]`, then `[x21 + 0x794]`).
 - **Fix:** after `encode_args`, a draw whose pass ended (`g_enc != en`) is encoded again from the start in a new pass; the texture is already upgraded, so the second binding does not end it (a second end would be logged red and the draw skipped).
-- **Found on:** Need for Speed: Hot Pursuit Remastered (`010029B0118E8000`, 1.0.3; its profile is a separate pull request): a 4096x1024 texture sampled through a view of another format at its first loading screen.
+- **Found on:** [Need for Speed: Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md) (a 4096x1024 texture sampled through a view of another format at its first loading screen).
 
 ### Compressed textures as render targets through an uncompressed shadow
 
