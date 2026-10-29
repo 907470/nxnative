@@ -25,13 +25,12 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest # Uses the latest available macOS Apple Silicon runner
+    runs-on: macos-15 # Uses the latest available macOS Apple Silicon runner
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # Dynamically choose repository and branch based on your dropdown selection
           repository: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'mianmuhammadse/nxnative' || 'seedds/nxnative' }}
           ref: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'no-bc' || 'main' }}
           submodules: recursive
@@ -62,26 +61,32 @@ jobs:
           echo "Checking prod.keys setup:"
           ls -la ~/.switch/prod.keys
 
-      - name: Download Game Files from Google Drive
+      - name: Download and Handle Game Files from Google Drive
         run: |
-          mkdir -p Games/${{ github.event.inputs.game_name }}
-          gdown "${{ github.event.inputs.gdrive_file_id }}" -O game_download.archive
+          GAME_DIR="Games/${{ github.event.inputs.game_name }}"
+          mkdir -p "$GAME_DIR"
           
-          FILE_TYPE=$(file --mime-type -b game_download.archive)
+          # Download directly into the target game directory
+          gdown "${{ github.event.inputs.gdrive_file_id }}" -O "$GAME_DIR/game_download.archive"
+          
+          FILE_TYPE=$(file --mime-type -b "$GAME_DIR/game_download.archive")
           echo "Detected file mime-type: $FILE_TYPE"
           
-          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar"; then
-            unzip -q game_download.archive -d Games/${{ github.event.inputs.game_name }}/ || true
-            rm -f game_download.archive
-          else
-            mv game_download.archive Games/${{ github.event.inputs.game_name }}/game.xci
+          # Check if it's a zip or compressed archive and extract it; otherwise treat as raw game file
+          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
+            unzip -q "$GAME_DIR/game_download.archive" -d "$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
           fi
           
-          # Flatten nested folder structures if unzipped
-          find Games/${{ github.event.inputs.game_name }} -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} Games/${{ github.event.inputs.game_name }}/ \;
+          # If no game files are found yet, name the download based on its extension or fallback to .xci
+          if [ -z "$(find "$GAME_DIR" -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
+            mv "$GAME_DIR/game_download.archive" "$GAME_DIR/game.xci" 2>/dev/null || true
+          fi
           
-          echo "=== Final contents of Games/${{ github.event.inputs.game_name }} ==="
-          ls -la Games/${{ github.event.inputs.game_name }}
+          # Flatten nested folder structures to ensure files sit directly in the game folder
+          find "$GAME_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$GAME_DIR/" \;
+          
+          echo "=== Final contents of $GAME_DIR ==="
+          ls -la "$GAME_DIR"
 
       - name: Run Build Script
         run: |
