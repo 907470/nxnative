@@ -116,6 +116,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** `shader_split.py` reads zip archives member by member in parallel ranges (`zip_jobs` / `zip_shaders`; `zipfile`), each member scanned like a loose file, whole GLSLC outputs included. `profile_guess.py` `shader_sources` asks for the run-time GLSLC capture when an NRO the game loads imports `glslcCompile` and a subsdk defines it (`glslc_capture`). Portal's map: 242 keys from the `.nvsb` files and 13 from the capture, 229 vertex and pixel pairs.
 - **Found on:** [Portal](../../dm/games/01007BB017812000/README.md). No other profile's RomFS has a zip archive holding shaders.
 
+### GLSLC outputs in Criterion's Bundle 2 resources
+
+- **Symptom:** an NVN game's split finds a few dozen shaders (`main`'s and a loose file's) and the screen stays black but for the loading indicator, with `[RED] shader … is not in the shader map` and `program has no vertex shader`; the RomFS holds `.BNDL` files that start with `bnd2`.
+- **Cause:** Criterion's Bundle 2 (Burnout Paradise's format; version 3 here) keeps each resource zlib-compressed: the header gives the entry count and table offset (+0x10, +0x14), four block data offsets (+0x18) and the flags (+0x28, bit 0: compressed); a 0x50-byte entry gives the resource ID, four sizes on disk (+0x20, alignment in the top nibble), four offsets (+0x30) and the type (+0x44). Need for Speed: Hot Pursuit Remastered's `SHADERS.BNDL` holds 2,112 whole GLSLC outputs in block 1 of its type 0x8 resources, none of which a raw scan of the file can see.
+- **Fix:** `shader_split.py` reads a file that starts with `bnd2` resource by resource (`bnd2_resources`) and scans each inflated block for GLSLC outputs (`bnd2_shaders`), by the outputs' magic rather than the resource type, whose numbering is per game. Hot Pursuit Remastered: 89 → 2,154 shaders, the 10 its first frames asked for among them.
+- **Found on:** [Need for Speed: Hot Pursuit Remastered](../../dm/games/010029B0118E8000/README.md).
+
 ### G2S containers in KTGL RDB archives
 
 - **How it is stored:** each material's shaders are a G2S container (`_S2G3000`, type KTID `0x7bcd279f`; 23,108 entries in `asset/system.rdb.bin*`, 2.3 GB inflated) of GLSLC outputs, as in 13 Sentinels' `main`, inside zlib-chunked IDRK entries ([01](../agents/01-extract.md)). One `_DOK0000` container (type `0x20a6a0bb`, the engine's system resources) holds 151 more bare GLSLC outputs, 21 of them drawn in the first battle.
