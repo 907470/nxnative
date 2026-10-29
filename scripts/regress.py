@@ -175,8 +175,7 @@ def disk_free_gb(path='/System/Volumes/Data'):
 
 
 def clean_metal_cache():   # Metal's idle build folders, which every host run adds to the internal disk (scripts/clean_metal_cache.py)
-    spec = importlib.util.spec_from_file_location('clean_metal_cache', Path(__file__).resolve().parent / 'clean_metal_cache.py')
-    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    m = load_module('clean_metal_cache', REPO / 'scripts/clean_metal_cache.py')
     try: n, size, _, _ = m.clean(say=say)
     except OSError as e: say(f'[RED] Metal build folders not cleaned: {e}'); return
     if n: say(f'Metal build folders: {n} idle ones removed, {size / 1e9:.1f} GB')
