@@ -29,7 +29,7 @@ def registered_at(word, text_end, j):
     IConsoleManager's register call (UE 4.2x and 5), and the object is the address made by adrp + add that the value pointer it returns is then stored into, str x0, [xN, #0x10] (UE 5
     calls a base constructor between the two). Anything else (a lookup by name, a log line) is no registration. Registers are followed from the last call or branch before the name (UE
     4.18 loads the object first); those a call or a load overwrites are forgotten, and an adrp x1 after the registration (the next variable's name) ends the search"""
-    if not add_imm(word(j)) or add_imm(word(j))[0] != 1: return None
+    if not (name_add := add_imm(word(j))) or name_add[0] != 1: return None
     val, name, registered = {}, False, False   # val: register → address made by adrp + add (or copied by mov); name: x1 holds the name
     for t in range(max(0, j - 64), min(text_end, j + 192), 4):
         u = word(t)

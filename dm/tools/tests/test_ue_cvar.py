@@ -68,7 +68,7 @@ class FindTest(unittest.TestCase):
 
     def test_register_form(self):
         for base_ctor in (False, True):
-            o, why = find(image(lambda a: register_form(a, NAME, 0, store=False), lambda a: register_form(a, NAME, OBJ, base_ctor=base_ctor)))
+            o, why = find(image(lambda a: register_form(a, NAME, 0, store=False), lambda a, base_ctor=base_ctor: register_form(a, NAME, OBJ, base_ctor=base_ctor)))
             self.assertEqual(o, OBJ, why)
 
     def test_utf32_name(self):
