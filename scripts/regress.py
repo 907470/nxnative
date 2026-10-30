@@ -247,7 +247,10 @@ class Game:
         self.patched = bench.newest(build.glob('patched_v*'))
         self.ver = self.patched.name.removeprefix('patched_') if self.patched else None
         self.kind = 'nvn' if (build / 'shader/pkg').is_dir() else 'vk' if (build / 'shader/vk').is_dir() else 'gl' if (build / 'shader/gl').is_dir() else None
-        self.derived = (build / 'profile' / self.id / 'game.tsv').is_file()
+        # The build's own profile runs instead of dm/games' only when it is derived (the NSP script's <id>.derived.key beside it: a version the game's profile was not brought up
+        # on) or the game has no profile here (a provisional one). A provisional profile the NSP script left from before the game's profile was added would test its guesses
+        own = build / 'profile' / self.id
+        self.derived = (own / 'game.tsv').is_file() and ((build / 'profile' / f'{self.id}.derived.key').is_file() or not (REPO / 'dm/games' / self.id / 'game.tsv').is_file())
 
     def romfs(self):
         r = bench.rfs.source(self.build / 'extract' / self.ver)
@@ -1443,7 +1446,7 @@ def cmd_impact(a):
 def select(a, smoke):
     games = find_games(a.games.split(',') if a.games else None)
     if not games: raise HarnessError(f'no game with a Mac build under {GAMES}')
-    say('games: ' + ', '.join(f"{g.id} ({g.name}, {g.kind}{', route' if g.route() else ''})" for g in games))
+    say('games: ' + ', '.join(f"{g.id} ({g.name}, {g.kind}{', route' if g.route() else ''}{', the build profile' if g.derived else ''})" for g in games))
     return games
 
 
