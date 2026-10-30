@@ -13,6 +13,14 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Check:** measure before sizing (`DM_SVC=1`: the `SetHeapSize` request and the highest `MapPhysicalMemory` address).
 - **Note:** on iOS without the extended-virtual-addressing entitlement a single 6 GB reservation succeeds and 7 GB fails, but Metal and the rest of the process need address space too; 5 GB is the total proven on a phone (D2R).
 
+### Thread stacks placed at random in the stack region
+
+- **Symptom:** an `nn::diag` abort with Result 0 under `nn::os::detail::ThreadManager::CreateThread` → `ThreadManagerImplByHorizon::MapAliasStack`, on some boots and not on others, with no `MapMemory refused` line.
+- **Cause:** `CreateThread` moves each stack into the stack region at a random address: `StackGuardManager::MapAtRandomAddress` asks `AddressSpaceAllocatorBase::AllocateSpace` for a place, which tries 512 random addresses and gives up when none has the stack and its guard pages free; `MapAliasStack` aborts on that. Horizon gives a 39-bit process a 2 GB stack region; the host's is the profile's `mem_stack`, 256 MB in every profile until then. Super Monkey Ball Banana Rumble's Unity player maps 48 stacks, 106 MB, in its first 30 s, nine of them 8 MB: the positions those stacks rule out for a new 8 MB one add up to more than 256 MB, so some boots found none. A game whose stacks fill a smaller part of the region only fails more rarely.
+- **Fix:** the profile's `mem_stack` sized for the game's stacks with room to spare: 640 MB for Super Monkey Ball Banana Rumble, taken from its alias region in the same 5 GB block (an iPhone has no room for a larger one).
+- **Found on:** [Super Monkey Ball Banana Rumble](../../dm/games/010031F019294000/README.md#memory) (SDK 17.5.8: `MapAliasStack` at `sdk+0x13b23c`, the abort at `+0x13b2b8`).
+- **Check:** `DM_THR=1 DM_SVC=1`: the `MapMemory <stack region address> <- … +<size>` lines are the stacks; their sum and the largest against `mem_stack` (the `guest AS` line gives the stack region's start).
+
 ## Heap and application pool
 
 ### Provisional Unreal layout leaves no heap
