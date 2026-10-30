@@ -103,6 +103,10 @@ jobs:
 
       - name: Run Build Script
         run: |
+          echo "Patching Launcher.swift compatibility error..."
+          # Fix glassProminent syntax error if present in upstream source
+          find dm/ios/Sources -name "Launcher.swift" -exec sed -i '' 's/glassProminent/automatic/g' {} +
+          
           echo "Running build script on prepared directory..."
           python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys
 
