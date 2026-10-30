@@ -1,4 +1,4 @@
-name: Build nxnative IPA
+name: Build nxnative test IPA
 
 on:
   workflow_dispatch:
