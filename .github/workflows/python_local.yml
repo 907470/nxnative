@@ -1,18 +1,14 @@
-name: Build nxnative IPA
+name: Build nxnative Self Hosted IPA
 
 on:
   workflow_dispatch:
     inputs:
-      game_filename:
-        description: 'Exact archive filename in RomM folder (e.g. BrilliantDiamond.7z)'
-        required: true
-        default: 'BrilliantDiamond.7z'
       game_name:
-        description: 'Folder/Game name to output (e.g. BrilliantDiamond)'
+        description: 'Folder or filename in your RomM directory (e.g. PaperMario)'
         required: true
-        default: 'BrilliantDiamond'
+        default: 'PaperMario'
       tunnel_url:
-        description: 'Active Cloudflare Tunnel URL (e.g. https://xxxx.trycloudflare.com)'
+        description: 'Active Cloudflare Tunnel Root URL (e.g. https://xxxx.trycloudflare.com)'
         required: true
       device_type:
         description: 'Target Device / Architecture'
@@ -42,7 +38,7 @@ jobs:
 
       - name: Install System Dependencies via Homebrew
         run: |
-          brew install xcodegen zstd glslang p7zip
+          brew install xcodegen zstd glslang p7zip wget
           brew install --cask dotnet-sdk
 
       - name: Install Python Dependencies & nsz
@@ -66,30 +62,44 @@ jobs:
           GAME_DIR="Games/${{ github.event.inputs.game_name }}"
           mkdir -p "$GAME_DIR"
           
-          # Construct the direct URL to your local RomM switch library file
-          FILE_URL="${{ github.event.inputs.tunnel_url }}/${{ github.event.inputs.game_filename }}"
+          # Clean up any trailing slash from the input tunnel URL automatically
+          CLEAN_TUNNEL_URL="${{ github.event.inputs.tunnel_url }}"
+          CLEAN_TUNNEL_URL="${CLEAN_TUNNEL_URL%/}"
           
-          echo "Fetching from local server: $FILE_URL"
-          curl -L "$FILE_URL" -o "$GAME_DIR/game_download.archive"
+          # Check if the input points to a file archive (.7z, .zip) or a directory
+          TARGET_INPUT="${{ github.event.inputs.game_name }}"
           
-          FILE_TYPE=$(file --mime-type -b "$GAME_DIR/game_download.archive")
-          echo "Detected file mime-type: $FILE_TYPE"
-          
-          # Handle archive extraction (.zip, .7z, or compressed packages)
-          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
-            unzip -q "$GAME_DIR/game_download.archive" -d "$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
+          if [[ "$TARGET_INPUT" == *.7z ]] || [[ "$TARGET_INPUT" == *.zip ]] || [[ "$TARGET_INPUT" == *.rar ]]; then
+            # Single file download via curl
+            FILE_URL="$CLEAN_TUNNEL_URL/$TARGET_INPUT"
+            echo "Fetching file from local server: $FILE_URL"
+            curl -L "$FILE_URL" -o "$GAME_DIR/game_download.archive"
             
-            if [ -f "$GAME_DIR/game_download.archive" ]; then
-              7z x "$GAME_DIR/game_download.archive" -o"$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
+            FILE_TYPE=$(file --mime-type -b "$GAME_DIR/game_download.archive")
+            echo "Detected file mime-type: $FILE_TYPE"
+            
+            if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
+              unzip -q "$GAME_DIR/game_download.archive" -d "$GAME_DIR/" 2>/dev/null || true
+              if [ -f "$GAME_DIR/game_download.archive" ]; then
+                7z x "$GAME_DIR/game_download.archive" -o"$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
+              fi
             fi
+            
+            if [ -z "$(find "$GAME_DIR" -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
+              mv "$GAME_DIR/game_download.archive" "$GAME_DIR/game.xci" 2>/dev/null || true
+            fi
+          else
+            # Recursive folder download via wget
+            FOLDER_URL="$CLEAN_TUNNEL_URL/$TARGET_INPUT/"
+            echo "Recursively downloading folder from local server: $FOLDER_URL"
+            
+            wget -r -np -nH --cut-dirs=1 --reject "index.html*" -P "$GAME_DIR" "$FOLDER_URL"
+            
+            # Clean up stray index files
+            find "$GAME_DIR" -name "index.html*" -delete
           fi
           
-          # Fallback if it was a raw uncompressed file
-          if [ -z "$(find "$GAME_DIR" -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
-            mv "$GAME_DIR/game_download.archive" "$GAME_DIR/game.xci" 2>/dev/null || true
-          fi
-          
-          # Flatten folder structure so all files (.xci base and .nsp updates) sit together in the target directory
+          # Flatten nested folder structures so all files sit directly in the game directory
           find "$GAME_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$GAME_DIR/" \;
           
           echo "=== Final contents of $GAME_DIR ==="
