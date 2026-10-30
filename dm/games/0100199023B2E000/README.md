@@ -17,7 +17,8 @@ No code of the game is cut, and the profile needs no run-time key: the game sets
 - RomFS: 14,163 loose files, 10.35 GB, nearly all under `Data/NX`: G1T textures, G1S shader files, `*.elixir.gz` archives, `KTSL2` sound banks, four MP4 movies; event scripts and XML tables beside them.
 - 1,049 shaders (595 pixel, 394 vertex, 58 compute, 2 geometry), all built for the Mac: GLSLC outputs in the G2S containers (`_S2G3000` / `_S2G7000`) of `Data/NX/Shader/*.g1s` and `PostEffect/*.g1s`, the bare outputs of `ShaderOriginal/*.fpo` / `*.cpo`, the elixir archives, and 67 in `main`. The vertex shaders are single-stage programs, paired with a cover pixel shader.
 - **Resolved: every frame black, the title screen included, with 26 shaders not in the shader map in the first minute.** They were the post effects' GLSLC outputs in `Data/NX/PostEffect/pe_pack.elixir.gz`, one of the 156 `.gz` files (of 4,112) in Gust's chunked zlib; the other 3,956 are `CRAE` archives stored as they are. The split now inflates that form: [Gust's chunked zlib `.gz` files](../../../docs/reference/shaders.md#gusts-chunked-zlib-gz-files). Two of the dumped shaders had a split shader's code area with other compile information at control +0x7d0 (`CopyDepthToColor.fpo`'s against the archive's copy): another compile of the same source, not a shared control section, so `shader_key_skip` was not the answer.
-- **Current:** five `texture type mismatch … bound as is` lines over the opening, once per shader and slot: a cube texture (NVN target 8, format 0x42) in a slot declared 2D, in a compute shader of `CLC.g1s` (slot 1), pixel shaders of the `PBB-*` materials (slots 8 and 20) and the river's vertex shader `e8af9589084ea494` (`ObjectRiver_Gb.g1s`, slot 0, which one run found holding a buffer texture instead and read as zero). The textures change from run to run, so they look like stale bindings in slots those draws do not set; nothing on screen looks wrong.
+- **Resolved: up to five `texture type mismatch … bound as is` lines over the opening** for a cube texture (NVN target 8, format 0x42) in a slot declared 2D: a compute shader of `CLC.g1s` (slot 1), pixel shaders of the `PBB-*` materials (slots 8 and 20) and the river's vertex shader `e8af9589084ea494` (`ObjectRiver_Gb.g1s`, slot 0). The host now binds the cube's first face as a 2D view: [Compatible views for a mismatched declared texture type](../../../docs/reference/rendering.md#compatible-views-for-a-mismatched-declared-texture-type). The field looked the same before and after.
+- **Current:** the same slots hold other textures in other runs, so they look like stale bindings the draws do not set: the river's slot 0 a buffer texture in some runs (read as zero, one red line), the `PBB-*` pixel shaders' slot 20 a 3D texture in one run (no view bridges it; two red lines). Nothing on screen looks wrong.
 
 ## Display, input and movies
 
@@ -48,10 +49,11 @@ No code of the game is cut, and the profile needs no run-time key: the game sets
 
 - iOS: no IPA built yet; untested on a device. The Mac's 4.0 GB resident in the field is close to what an iPhone allows a game.
 - Not reached: a battle, synthesis, the mainland; sound on a Mac with audio out was not listened to.
-- The texture type mismatches above: what the Switch reads from a cube texture through a 2D sample was not checked.
+- The texture type mismatches above: what the Switch reads from a cube texture through a 2D sample (taken to be the first face) was not measured, nor what it reads from the buffer and 3D textures left in those slots.
 - Only update 1.2.0 is registered. Other versions come from a derived profile.
 
 ## Found on this game
 
 - [Gust's chunked zlib `.gz` files](../../../docs/reference/shaders.md#gusts-chunked-zlib-gz-files): `gust_gz` in `shader_split.py`, 921 → 1,049 shaders.
+- [Compatible views for a mismatched declared texture type](../../../docs/reference/rendering.md#compatible-views-for-a-mismatched-declared-texture-type): the cube → 2D view (`tex_fit`).
 - An SDK 18.3.2 instance of [the SDK's address-region node area](../../../docs/reference/memory.md#the-sdks-address-region-node-area), cut by the SDK-wide rule.
