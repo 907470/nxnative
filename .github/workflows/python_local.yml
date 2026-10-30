@@ -1,0 +1,110 @@
+name: Build nxnative IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_filename:
+        description: 'Exact archive filename in RomM folder (e.g. BrilliantDiamond.7z)'
+        required: true
+        default: 'BrilliantDiamond.7z'
+      game_name:
+        description: 'Folder/Game name to output (e.g. BrilliantDiamond)'
+        required: true
+        default: 'BrilliantDiamond'
+      tunnel_url:
+        description: 'Active Cloudflare Tunnel URL (e.g. https://xxxx.trycloudflare.com)'
+        required: true
+      device_type:
+        description: 'Target Device / Architecture'
+        required: true
+        default: 'iphone15_plus'
+        type: choice
+        options:
+          - iphone15_plus      # iPhone 15 Pro+, iPads, Macs (Official repo)
+          - iphone14pro_a16    # iPhone 14 Pro / A16 Bionic (Compatibility fork with BC-to-ASTC)
+
+jobs:
+  build:
+    runs-on: macos-15 # Uses the latest available macOS Apple Silicon runner
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'mianmuhammadse/nxnative' || 'seedds/nxnative' }}
+          ref: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'no-bc' || 'main' }}
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install System Dependencies via Homebrew
+        run: |
+          brew install xcodegen zstd glslang p7zip
+          brew install --cask dotnet-sdk
+
+      - name: Install Python Dependencies & nsz
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 capstone fonttools nsz "backports.zstd; python_version < '3.14'"
+
+      - name: Download Xcode Metal Toolchain Component
+        run: |
+          xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Restore prod.keys from GitHub Secrets
+        run: |
+          mkdir -p ~/.switch
+          echo "${{ secrets.PROD_KEYS }}" > ~/.switch/prod.keys
+          echo "Checking prod.keys setup:"
+          ls -la ~/.switch/prod.keys
+
+      - name: Download Game Files from Local Server Tunnel
+        run: |
+          GAME_DIR="Games/${{ github.event.inputs.game_name }}"
+          mkdir -p "$GAME_DIR"
+          
+          # Construct the direct URL to your local RomM switch library file
+          FILE_URL="${{ github.event.inputs.tunnel_url }}/${{ github.event.inputs.game_filename }}"
+          
+          echo "Fetching from local server: $FILE_URL"
+          curl -L "$FILE_URL" -o "$GAME_DIR/game_download.archive"
+          
+          FILE_TYPE=$(file --mime-type -b "$GAME_DIR/game_download.archive")
+          echo "Detected file mime-type: $FILE_TYPE"
+          
+          # Handle archive extraction (.zip, .7z, or compressed packages)
+          if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
+            unzip -q "$GAME_DIR/game_download.archive" -d "$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
+            
+            if [ -f "$GAME_DIR/game_download.archive" ]; then
+              7z x "$GAME_DIR/game_download.archive" -o"$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
+            fi
+          fi
+          
+          # Fallback if it was a raw uncompressed file
+          if [ -z "$(find "$GAME_DIR" -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
+            mv "$GAME_DIR/game_download.archive" "$GAME_DIR/game.xci" 2>/dev/null || true
+          fi
+          
+          # Flatten folder structure so all files (.xci base and .nsp updates) sit together in the target directory
+          find "$GAME_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$GAME_DIR/" \;
+          
+          echo "=== Final contents of $GAME_DIR ==="
+          ls -la "$GAME_DIR"
+
+      - name: Run Build Script
+        run: |
+          python3 scripts/build_ipa_from_nsp.py Games/${{ github.event.inputs.game_name }} -k ~/.switch/prod.keys
+
+      - name: Upload Generated Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-nxnative-output
+          retention-days: 7
+          path: |
+            Games/**/*.ipa
+            Games/**/*.json
+            Games/**/*.zip
