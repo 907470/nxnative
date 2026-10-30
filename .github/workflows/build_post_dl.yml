@@ -1,0 +1,117 @@
+name: Build nxnative IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_target:
+        description: 'Exact filename or folder in RomM (e.g. Paper Mario.7z or MarioKart)'
+        required: true
+        default: 'Paper Mario.7z'
+      tunnel_url:
+        description: 'Active Cloudflare Tunnel Root URL (e.g. https://xxxx.trycloudflare.com)'
+        required: true
+      device_type:
+        description: 'Target Device / Architecture'
+        required: true
+        default: 'iphone15_plus'
+        type: choice
+        options:
+          - iphone15_plus      # iPhone 15 Pro+, iPads, Macs (Official repo)
+          - iphone14pro_a16    # iPhone 14 Pro / A16 Bionic (Compatibility fork with BC-to-ASTC)
+
+jobs:
+  build:
+    runs-on: macos-15 # Uses the latest available macOS Apple Silicon runner
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'mianmuhammadse/nxnative' || 'seedds/nxnative' }}
+          ref: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'no-bc' || 'main' }}
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install System Dependencies via Homebrew
+        run: |
+          brew install xcodegen zstd glslang p7zip wget spirv-cross
+          brew install --cask dotnet-sdk
+
+      - name: Install Python Dependencies & nsz
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 capstone fonttools nsz "backports.zstd; python_version < '3.14'"
+
+      - name: Download Xcode Metal Toolchain Component
+        run: |
+          xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Restore prod.keys from GitHub Secrets
+        run: |
+          mkdir -p ~/.switch
+          echo "${{ secrets.PROD_KEYS }}" > ~/.switch/prod.keys
+          echo "Checking prod.keys setup:"
+          ls -la ~/.switch/prod.keys
+
+      - name: Download and Prepare Game Files
+        run: |
+          RAW_TARGET="${{ github.event.inputs.game_target }}"
+          CLEAN_TUNNEL_URL="${{ github.event.inputs.tunnel_url }}"
+          CLEAN_TUNNEL_URL="${CLEAN_TUNNEL_URL%/}"
+          
+          # Automatically URL-encode the filename/target so spaces become %20 safely
+          ENCODED_TARGET=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$RAW_TARGET")
+          
+          # Determine target build directory (strip extension if it's an archive)
+          if [[ "$RAW_TARGET" == *.7z ]] || [[ "$RAW_TARGET" == *.zip ]] || [[ "$RAW_TARGET" == *.rar ]]; then
+            WORK_DIR="Games/PreparedGame"
+            mkdir -p "$WORK_DIR"
+            
+            FILE_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET"
+            echo "Fetching archive from local server: $FILE_URL"
+            curl -L "$FILE_URL" -o "$WORK_DIR/game_download.archive"
+            
+            echo "Extracting archive..."
+            7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
+            rm -f "$WORK_DIR/game_download.archive"
+            
+            # Flatten any nested directory structures
+            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
+            
+            echo "=== Final contents of $WORK_DIR ==="
+            ls -la "$WORK_DIR"
+          else
+            # Recursive folder download via wget for uncompressed folders
+            WORK_DIR="Games/$RAW_TARGET"
+            mkdir -p "$WORK_DIR"
+            
+            FOLDER_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET/"
+            echo "Recursively downloading folder from local server: $FOLDER_URL"
+            
+            wget -r -np -nH --cut-dirs=1 --reject "index.html*" -P "$WORK_DIR" "$FOLDER_URL"
+            find "$WORK_DIR" -name "index.html*" -delete
+            
+            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
+            
+            echo "=== Final contents of $WORK_DIR ==="
+            ls -la "$WORK_DIR"
+          fi
+
+      - name: Run Build Script
+        run: |
+          echo "Running build script on prepared directory..."
+          python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys
+
+      - name: Upload Generated Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-nxnative-output
+          retention-days: 7
+          path: |
+            Games/**/*.ipa
+            Games/**/*.json
+            Games/**/*.zip
