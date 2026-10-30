@@ -1,12 +1,12 @@
-name: Build nxnative Self Hosted IPA
+name: Build nxnative IPA
 
 on:
   workflow_dispatch:
     inputs:
-      game_name:
-        description: 'Folder or filename in your RomM directory (e.g. PaperMario)'
+      game_target:
+        description: 'Exact filename or folder in RomM (e.g. Paper Mario.7z or MarioKart)'
         required: true
-        default: 'PaperMario'
+        default: 'Paper Mario.7z'
       tunnel_url:
         description: 'Active Cloudflare Tunnel Root URL (e.g. https://xxxx.trycloudflare.com)'
         required: true
@@ -57,57 +57,57 @@ jobs:
           echo "Checking prod.keys setup:"
           ls -la ~/.switch/prod.keys
 
-      - name: Download Game Files from Local Server Tunnel
+      - name: Download and Prepare Game Files
         run: |
-          GAME_DIR="Games/${{ github.event.inputs.game_name }}"
-          mkdir -p "$GAME_DIR"
-          
-          # Clean up any trailing slash from the input tunnel URL automatically
+          RAW_TARGET="${{ github.event.inputs.game_target }}"
           CLEAN_TUNNEL_URL="${{ github.event.inputs.tunnel_url }}"
           CLEAN_TUNNEL_URL="${CLEAN_TUNNEL_URL%/}"
           
-          # Check if the input points to a file archive (.7z, .zip) or a directory
-          TARGET_INPUT="${{ github.event.inputs.game_name }}"
+          # Automatically URL-encode the filename/target so spaces become %20 safely
+          ENCODED_TARGET=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$RAW_TARGET")
           
-          if [[ "$TARGET_INPUT" == *.7z ]] || [[ "$TARGET_INPUT" == *.zip ]] || [[ "$TARGET_INPUT" == *.rar ]]; then
-            # Single file download via curl
-            FILE_URL="$CLEAN_TUNNEL_URL/$TARGET_INPUT"
-            echo "Fetching file from local server: $FILE_URL"
-            curl -L "$FILE_URL" -o "$GAME_DIR/game_download.archive"
+          # Determine target build directory (strip extension if it's an archive)
+          if [[ "$RAW_TARGET" == *.7z ]] || [[ "$RAW_TARGET" == *.zip ]] || [[ "$RAW_TARGET" == *.rar ]]; then
+            BASE_NAME="${RAW_TARGET%.*}"
+            # Clean up any weird characters or spaces for the working folder name
+            WORK_DIR="Games/PreparedGame"
+            mkdir -p "$WORK_DIR"
             
-            FILE_TYPE=$(file --mime-type -b "$GAME_DIR/game_download.archive")
-            echo "Detected file mime-type: $FILE_TYPE"
+            FILE_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET"
+            echo "Fetching archive from local server: $FILE_URL"
+            curl -L "$FILE_URL" -o "$WORK_DIR/game_download.archive"
             
-            if echo "$FILE_TYPE" | grep -qE "zip|compressed|tar|octet-stream"; then
-              unzip -q "$GAME_DIR/game_download.archive" -d "$GAME_DIR/" 2>/dev/null || true
-              if [ -f "$GAME_DIR/game_download.archive" ]; then
-                7z x "$GAME_DIR/game_download.archive" -o"$GAME_DIR/" 2>/dev/null && rm -f "$GAME_DIR/game_download.archive" || true
-              fi
-            fi
+            echo "Extracting archive..."
+            7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
+            rm -f "$WORK_DIR/game_download.archive"
             
-            if [ -z "$(find "$GAME_DIR" -name '*.nsp' -o -name '*.nsz' -o -name '*.xci')" ]; then
-              mv "$GAME_DIR/game_download.archive" "$GAME_DIR/game.xci" 2>/dev/null || true
-            fi
+            # Flatten any nested directory structures
+            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
+            
+            echo "=== Final contents of $WORK_DIR ==="
+            ls -la "$WORK_DIR"
           else
-            # Recursive folder download via wget
-            FOLDER_URL="$CLEAN_TUNNEL_URL/$TARGET_INPUT/"
+            # Recursive folder download via wget for uncompressed folders
+            WORK_DIR="Games/$RAW_TARGET"
+            mkdir -p "$WORK_DIR"
+            
+            FOLDER_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET/"
             echo "Recursively downloading folder from local server: $FOLDER_URL"
             
-            wget -r -np -nH --cut-dirs=1 --reject "index.html*" -P "$GAME_DIR" "$FOLDER_URL"
+            wget -r -np -nH --cut-dirs=1 --reject "index.html*" -P "$WORK_DIR" "$FOLDER_URL"
+            find "$WORK_DIR" -name "index.html*" -delete
             
-            # Clean up stray index files
-            find "$GAME_DIR" -name "index.html*" -delete
+            find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
+            
+            echo "=== Final contents of $WORK_DIR ==="
+            ls -la "$WORK_DIR"
           fi
-          
-          # Flatten nested folder structures so all files sit directly in the game directory
-          find "$GAME_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$GAME_DIR/" \;
-          
-          echo "=== Final contents of $GAME_DIR ==="
-          ls -la "$GAME_DIR"
 
       - name: Run Build Script
         run: |
-          python3 scripts/build_ipa_from_nsp.py Games/${{ github.event.inputs.game_name }} -k ~/.switch/prod.keys
+          # Point the builder directly to the prepared working directory containing the ROMs
+          echo "Running build script on prepared directory..."
+          python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys || python3 scripts/build_ipa_from_nsp.py Games/${{ github.event.inputs.game_target }} -k ~/.switch/prod.keys
 
       - name: Upload Generated Artifacts
         uses: actions/upload-artifact@v4
