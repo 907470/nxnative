@@ -52,7 +52,7 @@ jobs:
 
       - name: Install System Dependencies via Homebrew
         run: |
-          brew install xcodegen zstd glslang p7zip wget spirv-cross
+          brew install xcodegen zstd glslang p7zip wget spirv-cross aria2
           brew install --cask dotnet-sdk
 
       - name: Install Python Dependencies & nsz
@@ -82,8 +82,14 @@ jobs:
             mkdir -p "$WORK_DIR"
             
             FILE_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET"
-            echo "Fetching archive from local server: $FILE_URL"
-            curl -L "$FILE_URL" -o "$WORK_DIR/game_download.archive"
+            echo "Fetching archive from local server using aria2: $FILE_URL"
+            
+            # aria2c arguments:
+            # -c / --continue: Resume download if partial file exists
+            # -s16 / --max-connection-per-server: Use up to 16 connections for speed
+            # -j16: Max concurrent downloads
+            # -d: Output directory, -o: Output filename
+            aria2c -c -s16 -j16 --min-split-size=1M "$FILE_URL" -d "$WORK_DIR" -o "game_download.archive"
             
             echo "Extracting archive..."
             7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
