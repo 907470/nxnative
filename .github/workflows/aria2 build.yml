@@ -1,4 +1,4 @@
-name: Build nxnative IPA
+name: Build nxnative IPA aria2
 
 on:
   workflow_dispatch:
