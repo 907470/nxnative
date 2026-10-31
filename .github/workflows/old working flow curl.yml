@@ -1,4 +1,4 @@
-name: Build nxnative IPA
+name: Build nxnative IPA old curl
 
 on:
   workflow_dispatch:
