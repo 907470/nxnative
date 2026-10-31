@@ -1,4 +1,4 @@
-name: Build nxnative IPA from self host v.2
+name: Build nxnative IPA from self host v.3?
 
 on:
   workflow_dispatch:
