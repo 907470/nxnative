@@ -1,4 +1,4 @@
-name: Build nxnative IPA
+name: Build nxnative IPA from self host
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       game_target:
         description: 'Exact filename or folder in RomM (e.g. Paper Mario.7z or MarioKart)'
         required: true
-        default: 'PaperMario.7z'
+        default: 'SMO.7z'
       tunnel_url:
         description: 'Active Cloudflare Tunnel Root URL (e.g. https://xxxx.trycloudflare.com)'
         required: true
@@ -21,7 +21,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26 # Uses the updated Apple Silicon macOS runner with modern Xcode SDKs
+    runs-on: macos-latest # Uses the updated Apple Silicon macOS runner with modern Xcode SDKs
 
     steps:
       - name: Checkout Repository
