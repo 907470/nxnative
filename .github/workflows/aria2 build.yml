@@ -57,7 +57,15 @@ jobs:
           echo "Checking prod.keys setup:"
           ls -la ~/.switch/prod.keys
 
+      - name: Cache Extracted Game Files
+        id: cache-game
+        uses: actions/cache@v4
+        with:
+          path: Games/PreparedGame
+          key: nxnative-game-cache-${{ github.event.inputs.game_target }}
+
       - name: Download and Prepare Game Files
+        if: steps.cache-game.outputs.cache-hit != 'true'
         run: |
           RAW_TARGET="${{ github.event.inputs.game_target }}"
           CLEAN_TUNNEL_URL="${{ github.event.inputs.tunnel_url }}"
@@ -105,6 +113,12 @@ jobs:
             ls -la "$WORK_DIR"
           fi
 
+      - name: Skip Download on Cache Hit
+        if: steps.cache-game.outputs.cache-hit == 'true'
+        run: |
+          echo "Cache hit! Skipping download and extraction. Using pre-cached game files."
+          ls -la Games/PreparedGame
+
       - name: Cache Compiled iOS Shaders
         uses: actions/cache@v4
         with:
@@ -120,7 +134,7 @@ jobs:
           find dm/ios/Sources -name "Launcher.swift" -exec sed -i '' 's/glassProminent/automatic/g' {} +
           
           echo "Running build script on prepared directory..."
-          python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys
+          python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys --allow-other-metal
 
       - name: Upload Generated Artifacts
         uses: actions/upload-artifact@v4
