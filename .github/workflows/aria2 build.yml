@@ -31,6 +31,11 @@ jobs:
           ref: ${{ github.event.inputs.device_type == 'iphone14pro_a16' && 'no-bc' || 'main' }}
           submodules: recursive
 
+      - name: Select Xcode Version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.0'
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -45,10 +50,6 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install lz4 capstone fonttools nsz "backports.zstd; python_version < '3.14'"
-
-      - name: Download Xcode Metal Toolchain Component
-        run: |
-          xcodebuild -downloadComponent MetalToolchain || true
 
       - name: Restore prod.keys from GitHub Secrets
         run: |
@@ -129,7 +130,7 @@ jobs:
             nxnative-shaders-${{ github.event.inputs.game_target }}-
             nxnative-shaders-
 
-      - name: Run Build Script
+      - name: Run Build Script & Apply Patches
         run: |
           echo "Patching Launcher.swift compatibility error..."
           find dm/ios/Sources -name "Launcher.swift" -exec sed -i '' 's/glassProminent/automatic/g' {} +
@@ -137,8 +138,8 @@ jobs:
           echo "Patching DmGamepad.m motion property error..."
           find dm/ios/Sources -name "DmGamepad.m" -exec sed -i '' 's/deviceMotionBody/deviceMotion/g' {} +
 
-          echo "Patching unsupported apple-a18 CPU flags to apple-a16..."
-          find . -name "*.xcodeproj" -o -name "*.pbxproj" -o -name "*.json" -o -name "*.py" | xargs sed -i '' 's/apple-a18/apple-a16/g' || true
+          echo "Patching unsupported apple-a18 CPU flags to apple-a16 across all source and project files..."
+          find . -type f \( -name "*.swift" -o -name "*.m" -o -name "*.xcodeproj" -o -name "*.pbxproj" -o -name "*.json" -o -name "*.py" -o -name "Makefile" \) -exec sed -i '' 's/apple-a18/apple-a16/g' {} + || true
           
           echo "Running build script on prepared directory..."
           python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys --allow-other-metal
