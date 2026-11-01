@@ -21,7 +21,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15 # Uses the updated Apple Silicon macOS runner with modern Xcode SDKs
+    runs-on: macos-15 # Pinned to macos-15 for reliable Xcode 16 toolchain and SDK matching
 
     steps:
       - name: Checkout Repository
@@ -57,9 +57,9 @@ jobs:
           echo "Checking prod.keys setup:"
           ls -la ~/.switch/prod.keys
 
-      - name: Cache Extracted Game Files
+      - name: Restore Extracted Game Files Cache
         id: cache-game
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: Games/PreparedGame
           key: nxnative-game-cache-${{ github.event.inputs.game_target }}
@@ -74,7 +74,6 @@ jobs:
           # Automatically URL-encode the filename/target so spaces become %20 safely
           ENCODED_TARGET=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$RAW_TARGET")
           
-          # Determine target build directory (strip extension if it's an archive)
           if [[ "$RAW_TARGET" == *.7z ]] || [[ "$RAW_TARGET" == *.zip ]] || [[ "$RAW_TARGET" == *.rar ]]; then
             WORK_DIR="Games/PreparedGame"
             mkdir -p "$WORK_DIR"
@@ -82,22 +81,17 @@ jobs:
             FILE_URL="$CLEAN_TUNNEL_URL/$ENCODED_TARGET"
             echo "Fetching archive from local server using aria2: $FILE_URL"
             
-            # aria2c arguments:
-            # -c: Resume/restart interrupted downloads
-            # -s16 -j16 --min-split-size=1M: Use multiple split connections for fast download speeds
             aria2c -c -s16 -j16 --min-split-size=1M "$FILE_URL" -d "$WORK_DIR" -o "game_download.archive"
             
             echo "Extracting archive..."
             7z x "$WORK_DIR/game_download.archive" -o"$WORK_DIR/" -y || unzip -q "$WORK_DIR/game_download.archive" -d "$WORK_DIR/"
             rm -f "$WORK_DIR/game_download.archive"
             
-            # Flatten any nested directory structures
             find "$WORK_DIR" -mindepth 2 -type f \( -name "*.nsp" -o -name "*.nsz" -o -name "*.xci" \) -exec mv {} "$WORK_DIR/" \;
             
             echo "=== Final contents of $WORK_DIR ==="
             ls -la "$WORK_DIR"
           else
-            # Recursive folder download via wget for uncompressed folders
             WORK_DIR="Games/$RAW_TARGET"
             mkdir -p "$WORK_DIR"
             
@@ -112,6 +106,13 @@ jobs:
             echo "=== Final contents of $WORK_DIR ==="
             ls -la "$WORK_DIR"
           fi
+
+      - name: Save Extracted Game Files Cache (Even on Failure)
+        if: always() && steps.cache-game.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: Games/PreparedGame
+          key: nxnative-game-cache-${{ github.event.inputs.game_target }}
 
       - name: Skip Download on Cache Hit
         if: steps.cache-game.outputs.cache-hit == 'true'
@@ -132,6 +133,12 @@ jobs:
         run: |
           echo "Patching Launcher.swift compatibility error..."
           find dm/ios/Sources -name "Launcher.swift" -exec sed -i '' 's/glassProminent/automatic/g' {} +
+          
+          echo "Patching DmGamepad.m motion property error..."
+          find dm/ios/Sources -name "DmGamepad.m" -exec sed -i '' 's/deviceMotionBody/deviceMotion/g' {} +
+
+          echo "Patching unsupported apple-a18 CPU flags to apple-a16..."
+          find . -name "*.xcodeproj" -o -name "*.pbxproj" -o -name "*.json" -o -name "*.py" | xargs sed -i '' 's/apple-a18/apple-a16/g' || true
           
           echo "Running build script on prepared directory..."
           python3 scripts/build_ipa_from_nsp.py Games/PreparedGame -k ~/.switch/prod.keys --allow-other-metal
