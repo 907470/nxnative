@@ -19,6 +19,14 @@ on:
         options:
           - iphone15_plus      # iPhone 15 Pro+, iPads, Macs: project defaults (-mcpu=apple-a18)
           - iphone14pro_a16    # iPhone 14 Pro / A16: -mcpu=apple-a16 (main has no BC fallback: Vulkan/OpenGL games need BC textures)
+      romfs:
+        description: 'Game files: bundle = inside the IPA; separate = small IPA plus a RomFS.img artifact you copy to the phone (--romfs)'
+        required: true
+        default: 'bundle'
+        type: choice
+        options:
+          - bundle
+          - separate
       allow_other_metal:
         description: 'Pass --allow-other-metal (only if the Metal compiler check stops the build)'
         required: true
@@ -184,12 +192,13 @@ jobs:
       - name: Build the IPA
         env:
           ALLOW_OTHER_METAL: ${{ inputs.allow_other_metal }}
+          ROMFS_MODE: ${{ inputs.romfs }}
         run: |
           set -euo pipefail
           extra=""
           if [ "$ALLOW_OTHER_METAL" = "true" ]; then extra="--allow-other-metal"; fi
           python3 scripts/build_ipa_from_nsp.py "$WORK_DIR" \
-            -k "$HOME/.switch/prod.keys" --progress lines $extra
+            -k "$HOME/.switch/prod.keys" --progress lines --romfs "$ROMFS_MODE" $extra
 
       - name: Save compiled shaders
         if: always()
@@ -217,7 +226,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### ${{ steps.game.outputs.game }} (${{ inputs.device_type }})"
+            echo "### ${{ steps.game.outputs.game }} (${{ inputs.device_type }}, RomFS ${{ inputs.romfs }})"
             ls -lh "$WORK_DIR"/*.ipa 2>/dev/null | awk '{print "- `" $NF "` (" $5 ")"}' || true
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -233,6 +242,18 @@ jobs:
             Games/**/*.zip
             !Games/**/extract/**
             !Games/**/tmp/**
+
+      - name: Upload RomFS image (separate mode)
+        if: inputs.romfs == 'separate'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.game.outputs.game }}-romfs-${{ github.run_number }}
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0   # the image is large; copy it to the phone as Documents/romfs.img (the app refuses an image of another game version)
+          path: |
+            ${{ env.WORK_DIR }}/*_build/extract/*/RomFS.img
+            ${{ env.WORK_DIR }}/*_build/aoc/*
 
       - name: Upload build logs on failure
         if: failure()
