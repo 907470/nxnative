@@ -1,0 +1,232 @@
+name: nxnative IPA Builder (Xcode 27)
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_target:
+        description: 'File name on the tunnel/RomM server (ignored for Google Drive URLs)'
+        required: true
+        default: 'PaperMario.7z'
+      tunnel_url:
+        description: 'Google Drive share/download URL, or the tunnel base URL'
+        required: true
+        default: 'https://drive.google.com/uc?export=download&confirm=t&id=1_O5NFIohfWaU8X7LvbKjodeKJNauII0c'
+      device_type:
+        description: 'Target device / architecture'
+        required: true
+        default: 'iphone14pro_a16'
+        type: choice
+        options:
+          - iphone15_plus      # iPhone 15 Pro+, iPads, Macs: project defaults (-mcpu=apple-a18)
+          - iphone14pro_a16    # iPhone 14 Pro / A16: -mcpu=apple-a16 (main has no BC fallback: Vulkan/OpenGL games need BC textures)
+      allow_other_metal:
+        description: 'Pass --allow-other-metal (only if the Metal compiler check stops the build)'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The toolchain the repo supports (README: Xcode 27.2; dm/gfx/tools/dmsh_chain.lock holds its Metal compiler), named by path
+  # exactly as tests.yml does, so a new default Xcode on the image cannot change the build.
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+  WORK_DIR: Games/PreparedGame
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build IPA (${{ inputs.device_type }})
+    runs-on: xcode-27
+    timeout-minutes: 345   # first build of a big game: Odyssey took 2h18m for shaders alone on this runner size
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the selected Xcode's Metal toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadComponent MetalToolchain   # a separate component, not included in the xcode-27 image
+          xcrun --sdk iphoneos --show-sdk-version >/dev/null 2>&1 || xcodebuild -downloadPlatform iOS
+          xcodebuild -version
+          xcrun metal --version
+
+      - name: Check the Metal compiler against dmsh_chain.lock
+        if: ${{ !inputs.allow_other_metal }}
+        run: python3 dm/gfx/tools/own_compilers.py --check-metal   # stops here, early, with the reason, instead of after the download
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'   # the NSP script and the shader translator need the .NET 10 runtime
+
+      - name: Install tools and Python packages
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd glslang p7zip aria2
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic gdown \
+            "backports.zstd; python_version < '3.14'"
+
+      - name: Restore prod.keys
+        env:
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.switch"
+          printf '%s\n' "$PROD_KEYS" > "$HOME/.switch/prod.keys"
+          chmod 600 "$HOME/.switch/prod.keys"
+          test -s "$HOME/.switch/prod.keys" || { echo "::error::PROD_KEYS secret is empty"; exit 1; }
+
+      - name: Work out the cache key for this game
+        id: gamekey
+        env:
+          GAME_TARGET: ${{ inputs.game_target }}
+          TUNNEL_URL: ${{ inputs.tunnel_url }}
+        run: |
+          set -euo pipefail
+          h=$(printf '%s|%s' "$GAME_TARGET" "$TUNNEL_URL" | shasum -a 256 | cut -c1-16)
+          echo "key=$h" >> "$GITHUB_OUTPUT"
+
+      - name: Restore downloaded game files
+        id: cache-game
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.WORK_DIR }}
+          key: game-v1-${{ steps.gamekey.outputs.key }}
+
+      - name: Download and extract the game
+        if: steps.cache-game.outputs.cache-hit != 'true'
+        env:
+          GAME_TARGET: ${{ inputs.game_target }}
+          TUNNEL_URL: ${{ inputs.tunnel_url }}
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR"
+          ARCHIVE="$WORK_DIR/game_download.archive"
+
+          if [[ "$TUNNEL_URL" == *drive.google.com* ]]; then
+            echo "Downloading from Google Drive with gdown"
+            gdown --fuzzy "$TUNNEL_URL" -O "$ARCHIVE"
+          else
+            ENCODED=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$GAME_TARGET")
+            echo "Downloading with aria2"
+            aria2c -c -x16 -s16 --min-split-size=1M \
+              "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o game_download.archive
+          fi
+
+          # An HTML page saved as the archive means a bad link or a Drive quota page
+          if file "$ARCHIVE" | grep -qi 'html'; then
+            echo "::error::The download is an HTML page, not an archive (bad link, or Google Drive quota)"
+            exit 1
+          fi
+
+          echo "Extracting"
+          7z x "$ARCHIVE" -o"$WORK_DIR/" -y || unzip -q "$ARCHIVE" -d "$WORK_DIR/"
+          rm -f "$ARCHIVE"
+
+          # Game files nested in a folder go up to the top level
+          find "$WORK_DIR" -mindepth 2 -type f \
+            \( -name '*.nsp' -o -name '*.nsz' -o -name '*.xci' -o -name '*.xcz' \) \
+            -exec mv {} "$WORK_DIR/" \;
+
+          ls -la "$WORK_DIR"
+          if ! ls "$WORK_DIR" | grep -Eqi '\.(nsp|nsz|xci|xcz)$' && [ ! -d "$WORK_DIR/base" ]; then
+            echo "::error::No game files (.nsp/.nsz/.xci/.xcz, or a dump with base/) found after extraction"
+            exit 1
+          fi
+
+      - name: Save downloaded game files
+        if: steps.cache-game.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.WORK_DIR }}
+          key: game-v1-${{ steps.gamekey.outputs.key }}
+
+      - name: Restore compiled shaders
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.WORK_DIR }}/*_build/shader
+          key: shader-${{ steps.gamekey.outputs.key }}-${{ github.run_id }}
+          restore-keys: shader-${{ steps.gamekey.outputs.key }}-
+
+      - name: Target the iPhone 14 Pro (A16)
+        if: inputs.device_type == 'iphone14pro_a16'
+        run: |
+          set -euo pipefail
+          # project.yml is where the host's CPU flag lives (build_ipa.sh copies it and runs xcodegen); compile_check.py mirrors it.
+          # A plain `sed` over *.swift/*.m/*.pbxproj never reached project.yml, so the app was still built for apple-a18.
+          for f in dm/ios/project.yml dm/ios/tools/compile_check.py; do
+            grep -q 'apple-a18' "$f" || { echo "::error::apple-a18 not found in $f; the repo changed, update this step"; exit 1; }
+            sed -i '' 's/apple-a18/apple-a16/g' "$f"
+          done
+          grep -n 'mcpu' dm/ios/project.yml dm/ios/tools/compile_check.py
+          if grep -n 'apple-a18' dm/ios/project.yml dm/ios/tools/compile_check.py; then
+            echo "::error::apple-a18 is still present after patching"; exit 1
+          fi
+
+      - name: Build the IPA
+        env:
+          ALLOW_OTHER_METAL: ${{ inputs.allow_other_metal }}
+        run: |
+          set -euo pipefail
+          extra=""
+          if [ "$ALLOW_OTHER_METAL" = "true" ]; then extra="--allow-other-metal"; fi
+          python3 scripts/build_ipa_from_nsp.py "$WORK_DIR" \
+            -k "$HOME/.switch/prod.keys" --progress lines $extra
+
+      - name: Save compiled shaders
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.WORK_DIR }}/*_build/shader
+          key: shader-${{ steps.gamekey.outputs.key }}-${{ github.run_id }}
+
+      - name: Remove prod.keys
+        if: always()
+        run: rm -f "$HOME/.switch/prod.keys"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Build output (${{ inputs.device_type }})"
+            ls -lh "$WORK_DIR"/*.ipa 2>/dev/null | awk '{print "- `" $NF "` (" $5 ")"}' || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nxnative-${{ inputs.device_type }}-${{ github.run_number }}
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0   # an IPA is already a zip
+          path: |
+            Games/**/*.ipa
+            Games/**/*.zip
+            !Games/**/extract/**
+            !Games/**/tmp/**
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logs-${{ inputs.device_type }}-${{ github.run_number }}
+          retention-days: 7
+          if-no-files-found: ignore
+          path: ${{ env.WORK_DIR }}/*_build/logs
