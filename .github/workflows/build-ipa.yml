@@ -1,5 +1,9 @@
 name: nxnative IPA Builder (Xcode 27)
 
+# Shown in the run list. It is fixed when the run starts, so it can only use inputs: type the game's title in game_name
+# (falls back to the game_target file name when that is left empty).
+run-name: ${{ inputs.game_name || inputs.game_target }} IPA Build
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,6 +11,10 @@ on:
         description: 'File name on the tunnel/RomM server (ignored for Google Drive URLs)'
         required: true
         default: 'PaperMario.7z'
+      game_name:
+        description: 'Game title for the run name, e.g. Kingdom Hearts Melody Of Memory (optional)'
+        required: false
+        default: ''
       tunnel_url:
         description: 'Google Drive share/download URL, or the tunnel base URL'
         required: true
