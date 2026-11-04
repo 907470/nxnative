@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       game_target:
-        description: 'File name on the tunnel/RomM server (ignored for Google Drive URLs)'
+        description: 'On the tunnel: an archive or game file name, or a folder name (ending in / or with no extension). Ignored for Google Drive URLs'
         required: true
         default: 'PaperMario.7z'
       game_name:
@@ -136,35 +136,83 @@ jobs:
           set -euo pipefail
           rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR"
           ARCHIVE="$WORK_DIR/game_download.archive"
+          TARGET="${GAME_TARGET%/}"
+          ENCODED=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$TARGET")
 
           if [[ "$TUNNEL_URL" == *drive.google.com* ]]; then
+            MODE=archive
             echo "Downloading from Google Drive with gdown"
             gdown --fuzzy "$TUNNEL_URL" -O "$ARCHIVE"
+          elif [[ "$GAME_TARGET" == */ || ! "$TARGET" =~ \.(7z|zip|rar|tar|gz|xz|zst|nsp|nsz|xci|xcz)$ ]]; then
+            MODE=directory
+            echo "Downloading the folder '$TARGET' from the tunnel's directory listing"
+            LIST="$RUNNER_TEMP/aria2-list.txt"
+            python3 - "${TUNNEL_URL%/}/$ENCODED/" "$WORK_DIR" "$LIST" <<'PY'
+          import html.parser, sys, urllib.parse, urllib.request
+          base, work, out = sys.argv[1:4]
+          root = urllib.parse.urlsplit(base)
+          class Links(html.parser.HTMLParser):
+              def __init__(self): super().__init__(); self.hrefs = []
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'a': self.hrefs += [v for k, v in attrs if k == 'href' and v]
+          def fetch(url):
+              req = urllib.request.Request(url, headers={'User-Agent': 'nxnative-ci'})
+              with urllib.request.urlopen(req, timeout=60) as r: return r.read().decode('utf-8', 'replace')
+          files, seen = [], set()
+          def walk(url, depth):
+              if url in seen or depth > 5: return
+              seen.add(url)
+              cur = urllib.parse.urlsplit(url).path
+              page = fetch(url)
+              parser = Links(); parser.feed(page)
+              if depth == 0 and not parser.hrefs:
+                  sys.exit('::error::No links in the directory listing at ' + url + ' (it may not be a plain index page). Start of the page: ' + page[:300].replace('\n', ' '))
+              for h in parser.hrefs:
+                  if h.startswith(('?', '#', 'mailto:', 'javascript:')): continue
+                  full = urllib.parse.urljoin(url, h)
+                  sp = urllib.parse.urlsplit(full)
+                  if sp.netloc != root.netloc or not sp.path.startswith(cur) or sp.path == cur: continue   # parent / sort links
+                  if sp.path.endswith('/'): walk(full.split('?')[0].split('#')[0], depth + 1)
+                  else: files.append((full.split('?')[0], urllib.parse.unquote(sp.path[len(root.path):])))
+          walk(base, 0)
+          files = sorted(set(files))
+          if not files: sys.exit('::error::The directory listing at ' + base + ' has no files')
+          with open(out, 'w') as f:
+              for u, rel in files: f.write(f'{u}\n  dir={work}\n  out={rel}\n')
+          print(f'{len(files)} file(s):'); [print(' ', rel) for _, rel in files[:40]]
+          PY
+            aria2c -c -x16 -s16 -j4 --min-split-size=1M --auto-file-renaming=false --allow-overwrite=true -i "$LIST"
+          elif [[ "$TARGET" =~ \.(nsp|nsz|xci|xcz)$ ]]; then
+            MODE=file
+            echo "Downloading the game file with aria2"
+            aria2c -c -x16 -s16 --min-split-size=1M "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o "$(basename "$TARGET")"
           else
-            ENCODED=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$GAME_TARGET")
-            echo "Downloading with aria2"
-            aria2c -c -x16 -s16 --min-split-size=1M \
-              "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o game_download.archive
+            MODE=archive
+            echo "Downloading the archive with aria2"
+            aria2c -c -x16 -s16 --min-split-size=1M "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o game_download.archive
           fi
 
-          # An HTML page saved as the archive means a bad link or a Drive quota page
-          if file "$ARCHIVE" | grep -qi 'html'; then
-            echo "::error::The download is an HTML page, not an archive (bad link, or Google Drive quota)"
-            exit 1
+          if [ "$MODE" = archive ]; then
+            # An HTML page saved as the archive means a bad link or a Drive quota page
+            if file "$ARCHIVE" | grep -qi 'html'; then
+              echo "::error::The download is an HTML page, not an archive (bad link, or Google Drive quota)"
+              exit 1
+            fi
+            echo "Extracting"
+            7z x "$ARCHIVE" -o"$WORK_DIR/" -y || unzip -q "$ARCHIVE" -d "$WORK_DIR/"
+            rm -f "$ARCHIVE"
           fi
 
-          echo "Extracting"
-          7z x "$ARCHIVE" -o"$WORK_DIR/" -y || unzip -q "$ARCHIVE" -d "$WORK_DIR/"
-          rm -f "$ARCHIVE"
-
-          # Game files nested in a folder go up to the top level
-          find "$WORK_DIR" -mindepth 2 -type f \
-            \( -name '*.nsp' -o -name '*.nsz' -o -name '*.xci' -o -name '*.xcz' \) \
-            -exec mv {} "$WORK_DIR/" \;
+          # Game files nested in a folder go up to the top level (a dump with base/ is left as it is)
+          if [ ! -d "$WORK_DIR/base" ]; then
+            find "$WORK_DIR" -mindepth 2 -type f \
+              \( -name '*.nsp' -o -name '*.nsz' -o -name '*.xci' -o -name '*.xcz' \) \
+              -exec mv {} "$WORK_DIR/" \;
+          fi
 
           ls -la "$WORK_DIR"
           if ! ls "$WORK_DIR" | grep -Eqi '\.(nsp|nsz|xci|xcz)$' && [ ! -d "$WORK_DIR/base" ]; then
-            echo "::error::No game files (.nsp/.nsz/.xci/.xcz, or a dump with base/) found after extraction"
+            echo "::error::No game files (.nsp/.nsz/.xci/.xcz, or a dump with base/) found"
             exit 1
           fi
 
