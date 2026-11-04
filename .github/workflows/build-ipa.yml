@@ -237,11 +237,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
           compression-level: 0   # an IPA is already a zip
-          path: |
-            Games/**/*.ipa
-            Games/**/*.zip
-            !Games/**/extract/**
-            !Games/**/tmp/**
+          # One exact folder, no `**`: the action then lists only that folder. `Games/**/*.ipa` walked the whole tree (the staged IPA contents and the
+          # extracted game, 150,000+ files for Kingdom Hearts) and crashed with "Maximum call stack size exceeded" before uploading anything.
+          path: ${{ env.WORK_DIR }}/*.ipa
 
       - name: Upload RomFS image (separate mode)
         if: inputs.romfs == 'separate'
