@@ -137,6 +137,27 @@ jobs:
           rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR"
           ARCHIVE="$WORK_DIR/game_download.archive"
           TARGET="${GAME_TARGET%/}"
+
+          # The tunnel's origin is a home connection: 16 parallel connections made it answer 502, and after a drop it sometimes
+          # ignores the resume offset (aria2 exit 8, "Invalid range header"). So: few connections, quiet logs, no pre-allocation,
+          # waits between retries, and after an exit 8 the partial files are dropped and the download restarts on one connection.
+          CONN=4
+          dl() {
+            local attempt=1 rc=0
+            while true; do
+              aria2c -c -k 8M -x "$CONN" -s "$CONN" --max-tries=8 --retry-wait=10 --connect-timeout=30 --timeout=120 \
+                --file-allocation=none --auto-file-renaming=false --allow-overwrite=true \
+                --console-log-level=warn --summary-interval=30 "$@" && return 0 || rc=$?
+              [ "$attempt" -ge 3 ] && { echo "::error::aria2c failed (exit $rc) after $attempt attempts"; return "$rc"; }
+              echo "::warning::aria2c exit $rc (attempt $attempt of 3); retrying in 30 s"
+              if [ "$rc" -eq 8 ]; then
+                echo "The server could not resume a partial download: starting these files again on one connection"
+                find "$WORK_DIR" -name '*.aria2' -print0 | while IFS= read -r -d '' c; do rm -f "$c" "${c%.aria2}"; done
+                CONN=1
+              fi
+              attempt=$((attempt + 1)); sleep 30
+            done
+          }
           ENCODED=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$TARGET")
 
           if [[ "$TUNNEL_URL" == *drive.google.com* ]]; then
@@ -181,15 +202,15 @@ jobs:
               for u, rel in files: f.write(f'{u}\n  dir={work}\n  out={rel}\n')
           print(f'{len(files)} file(s):'); [print(' ', rel) for _, rel in files[:40]]
           PY
-            aria2c -c -x16 -s16 -j4 --min-split-size=1M --auto-file-renaming=false --allow-overwrite=true -i "$LIST"
+            CONN=2; dl -j2 -i "$LIST"
           elif [[ "$TARGET" =~ \.(nsp|nsz|xci|xcz)$ ]]; then
             MODE=file
             echo "Downloading the game file with aria2"
-            aria2c -c -x16 -s16 --min-split-size=1M "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o "$(basename "$TARGET")"
+            dl "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o "$(basename "$TARGET")"
           else
             MODE=archive
             echo "Downloading the archive with aria2"
-            aria2c -c -x16 -s16 --min-split-size=1M "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o game_download.archive
+            dl "${TUNNEL_URL%/}/$ENCODED" -d "$WORK_DIR" -o game_download.archive
           fi
 
           if [ "$MODE" = archive ]; then
@@ -201,6 +222,15 @@ jobs:
             echo "Extracting"
             7z x "$ARCHIVE" -o"$WORK_DIR/" -y || unzip -q "$ARCHIVE" -d "$WORK_DIR/"
             rm -f "$ARCHIVE"
+          fi
+
+          if [ "$MODE" = directory ]; then
+            # An archive inside the folder (a .zip next to the game, say) is unpacked where it is
+            while IFS= read -r -d '' a; do
+              echo "Extracting $a"
+              7z x "$a" -o"$(dirname "$a")/" -y || unzip -q "$a" -d "$(dirname "$a")/"
+              rm -f "$a"
+            done < <(find "$WORK_DIR" -maxdepth 2 -type f \( -iname '*.zip' -o -iname '*.7z' -o -iname '*.rar' \) -print0)
           fi
 
           # Game files nested in a folder go up to the top level (a dump with base/ is left as it is)
