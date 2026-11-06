@@ -69,6 +69,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Free up disk space
+        run: |
+          # A big game needs ~15 GB for its files + ~14 GB for the extracted RomFS + the shaders + the IPA; the build stops below 5 GB free.
+          # Remove what this build does not use: the other Xcode versions on the image (DEVELOPER_DIR names Xcode_27.2) and the Android SDK.
+          DATA=/System/Volumes/Data; [ -d "$DATA" ] || DATA=/
+          echo "before: $(df -h "$DATA" | awk 'NR==2{print $4" free of "$2}')"
+          for x in /Applications/Xcode_*.app; do
+            if [ -d "$x" ] && [ ! -L "$x" ] && [ "$x" != "/Applications/Xcode_27.2.app" ]; then echo "removing $x"; sudo rm -rf "$x" || true; fi
+          done
+          sudo rm -rf "$HOME/Library/Android" /Users/runner/Library/Android || true
+          echo "after:  $(df -h "$DATA" | awk 'NR==2{print $4" free of "$2}')"
+
       - name: Install the selected Xcode's Metal toolchain
         run: |
           set -euo pipefail
@@ -134,6 +146,11 @@ jobs:
           TUNNEL_URL: ${{ inputs.tunnel_url }}
         run: |
           set -euo pipefail
+          TUNNEL_URL="$(printf '%s' "$TUNNEL_URL" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          if [[ ! "$TUNNEL_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "::error::tunnel_url must be one full http(s):// address, but it is: '$TUNNEL_URL' (is something else pasted into the field?)"
+            exit 1
+          fi
           rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR"
           ARCHIVE="$WORK_DIR/game_download.archive"
           TARGET="${GAME_TARGET%/}"
@@ -246,8 +263,20 @@ jobs:
             exit 1
           fi
 
-      - name: Save downloaded game files
+      - name: Measure the downloaded game
+        id: gamesize
         if: steps.cache-game.outputs.cache-hit != 'true'
+        run: |
+          kb=$(du -sk "$WORK_DIR" | cut -f1)
+          echo "The game is $((kb / 1048576)) GB"
+          if [ "$kb" -lt 4194304 ]; then echo "cache=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cache=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not caching the game files ($((kb / 1048576)) GB): GitHub keeps 10 GB of caches per repo and would evict the compiled shaders, which are the part worth keeping"
+          fi
+
+      - name: Save downloaded game files
+        if: steps.cache-game.outputs.cache-hit != 'true' && steps.gamesize.outputs.cache == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.WORK_DIR }}
@@ -285,6 +314,13 @@ jobs:
           if [ "$ALLOW_OTHER_METAL" = "true" ]; then extra="--allow-other-metal"; fi
           python3 scripts/build_ipa_from_nsp.py "$WORK_DIR" \
             -k "$HOME/.switch/prod.keys" --progress lines --romfs "$ROMFS_MODE" $extra
+
+      - name: Disk report
+        if: always()
+        run: |
+          DATA=/System/Volumes/Data; [ -d "$DATA" ] || DATA=/
+          df -h "$DATA" | awk 'NR==2{print "free: "$4" of "$2}'
+          du -sh "$WORK_DIR"/* "$WORK_DIR"/*_build/* 2>/dev/null | sort -h | tail -8 || true
 
       - name: Save compiled shaders
         if: always()
