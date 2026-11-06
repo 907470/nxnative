@@ -75,9 +75,17 @@ jobs:
           # Remove what this build does not use: the other Xcode versions on the image (DEVELOPER_DIR names Xcode_27.2) and the Android SDK.
           DATA=/System/Volumes/Data; [ -d "$DATA" ] || DATA=/
           echo "before: $(df -h "$DATA" | awk 'NR==2{print $4" free of "$2}')"
-          for x in /Applications/Xcode_*.app; do
-            if [ -d "$x" ] && [ ! -L "$x" ] && [ "$x" != "/Applications/Xcode_27.2.app" ]; then echo "removing $x"; sudo rm -rf "$x" || true; fi
-          done
+          # Xcode_27.2.app is a link on the image (to Xcode_27.2_Release_Candidate.app): keep the folder DEVELOPER_DIR really points at
+          KEEP="$(cd "${DEVELOPER_DIR%/Contents/Developer}" 2>/dev/null && pwd -P || true)"
+          if [ -z "$KEEP" ] || [ ! -d "$KEEP/Contents/Developer" ]; then
+            echo "::warning::Could not find the Xcode that DEVELOPER_DIR names; not removing any Xcode"
+          else
+            echo "keeping $KEEP"
+            for x in /Applications/Xcode_*.app; do
+              [ -d "$x" ] && [ ! -L "$x" ] || continue
+              if [ "$(cd "$x" && pwd -P)" != "$KEEP" ]; then echo "removing $x"; sudo rm -rf "$x" || true; fi
+            done
+          fi
           sudo rm -rf "$HOME/Library/Android" /Users/runner/Library/Android || true
           echo "after:  $(df -h "$DATA" | awk 'NR==2{print $4" free of "$2}')"
 
