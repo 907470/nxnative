@@ -35,6 +35,15 @@ on:
         options:
           - bundle
           - separate
+      bundle_shaders:
+        description: 'Also upload the compiled shaders as a <game>-shaders-<run> artifact (a .tar.zst you can keep and feed back through shader_seed)'
+        required: true
+        default: true
+        type: boolean
+      shader_seed:
+        description: 'Optional: a shaders .tar.zst from an earlier run, as a full https:// URL or a file name on the tunnel (not for Google Drive). Restored before the build; the build re-makes whatever no longer matches'
+        required: false
+        default: ''
       allow_other_metal:
         description: 'Pass --allow-other-metal (only if the Metal compiler check stops the build)'
         required: true
@@ -297,6 +306,33 @@ jobs:
           key: shader-${{ steps.gamekey.outputs.key }}-${{ github.run_id }}
           restore-keys: shader-${{ steps.gamekey.outputs.key }}-
 
+      - name: Restore shaders from your own file (shader_seed)
+        if: inputs.shader_seed != ''
+        env:
+          SHADER_SEED: ${{ inputs.shader_seed }}
+          TUNNEL_URL: ${{ inputs.tunnel_url }}
+        run: |
+          set -euo pipefail
+          if [[ "$SHADER_SEED" == https://* ]]; then
+            url="$SHADER_SEED"
+          elif [[ "$TUNNEL_URL" == https://* && "$TUNNEL_URL" != *drive.google.com* ]]; then
+            enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SHADER_SEED")
+            url="${TUNNEL_URL%/}/$enc"
+          else
+            echo "::error::shader_seed must be a full https:// URL, or a file name on a tunnel (tunnel_url is a Google Drive link or not https)"; exit 1
+          fi
+          seed="$RUNNER_TEMP/shader-seed.tar.zst"
+          aria2c -c -x4 -s4 --max-tries=5 --retry-wait=10 -d "$RUNNER_TEMP" -o shader-seed.tar.zst "$url"
+          zstd -t "$seed"
+          # Only <id>_build/shader/... may be inside: nothing else of the work folder (or outside it) can be overwritten
+          if zstd -dc "$seed" | tar -tf - | grep -vE '^(\./)?[A-Za-z0-9._-]+_build/shader(/|$)'; then
+            echo "::error::The shader file has entries outside <id>_build/shader/ (listed above); it is not one of this workflow's shader bundles"; exit 1
+          fi
+          mkdir -p "$WORK_DIR"
+          zstd -dc "$seed" | tar -xf - -C "$WORK_DIR"
+          rm -f "$seed"
+          du -sh "$WORK_DIR"/*_build/shader
+
       - name: Target the iPhone 14 Pro (A16)
         if: inputs.device_type == 'iphone14pro_a16'
         run: |
@@ -353,6 +389,20 @@ jobs:
           name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')
           echo "game=${name:-nxnative}" >> "$GITHUB_OUTPUT"
 
+      - name: Bundle the compiled shaders
+        id: shaderbundle
+        if: always() && inputs.bundle_shaders
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dirs=("$WORK_DIR"/*_build/shader)
+          if [ ${#dirs[@]} -eq 0 ]; then echo "No shader folder yet (the build stopped before the shaders)"; exit 0; fi
+          out="$RUNNER_TEMP/${{ steps.game.outputs.game }}-shaders.tar.zst"
+          # Paths inside are <id>_build/shader/..., so extracting it into the work folder puts the shaders back where the build looks (shader_seed does that)
+          ( cd "$WORK_DIR" && tar -cf - *_build/shader | zstd -T0 -3 -q -o "$out" )
+          ls -lh "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+
       - name: Summary
         run: |
           {
@@ -382,6 +432,16 @@ jobs:
           path: |
             ${{ env.WORK_DIR }}/*_build/extract/*/RomFS.img
             ${{ env.WORK_DIR }}/*_build/aoc/*
+
+      - name: Upload compiled shaders
+        if: always() && steps.shaderbundle.outputs.file != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.game.outputs.game }}-shaders-${{ github.run_number }}
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0   # already zstd
+          path: ${{ steps.shaderbundle.outputs.file }}
 
       - name: Upload build logs on failure
         if: failure()
