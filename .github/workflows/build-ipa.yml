@@ -197,7 +197,9 @@ jobs:
           if [[ "$TUNNEL_URL" == *drive.google.com* ]]; then
             MODE=archive
             echo "Downloading from Google Drive with gdown"
-            gdown --fuzzy "$TUNNEL_URL" -O "$ARCHIVE"
+            # gdown 6 dropped --fuzzy (it reads a share link by itself now, and rejects the flag); older versions need it for /file/d/<id>/view links
+            fuzzy=""; if gdown --help 2>&1 | grep -q -- '--fuzzy'; then fuzzy="--fuzzy"; fi
+            gdown $fuzzy "$TUNNEL_URL" -O "$ARCHIVE"
           elif [[ "$GAME_TARGET" == */ || ! "$TARGET" =~ \.(7z|zip|rar|tar|gz|xz|zst|nsp|nsz|xci|xcz)$ ]]; then
             MODE=directory
             echo "Downloading the folder '$TARGET' from the tunnel's directory listing"
